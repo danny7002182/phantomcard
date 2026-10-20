@@ -1,0 +1,6 @@
+{
+  "name": "phantom-card-payment-service",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": { "dev": "node server.js", "test": "node --test test/*.test.js" }
+}

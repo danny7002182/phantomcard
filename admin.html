@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PHANTOM CARDS ADMIN</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&display=swap" rel="stylesheet" />
+    <script src="https://unpkg.com/lucide@latest" defer></script>
+    <link rel="stylesheet" href="/admin.css?v=20260913" />
+</head>
+<body>
+    <section class="admin-login" id="adminLogin">
+        <div class="login-brand"><span>✦</span> PHANTOM <b>CARDS</b></div>
+        <div class="login-card">
+            <p class="eyebrow">SECURE OPERATIONS CONSOLE</p>
+            <h1>Admin sign in</h1>
+            <p class="login-copy">Review financial operations, verification, and marketplace activity.</p>
+            <form id="adminLoginForm">
+                <label>Email<input id="adminEmail" type="email" autocomplete="username" required placeholder="admin@example.com" /></label>
+                <label>Password<input id="adminPassword" type="password" autocomplete="current-password" required placeholder="Enter password" /></label>
+                <button class="primary-button" type="submit">Sign in <span>→</span></button>
+                <p class="form-error" id="loginError" role="alert"></p>
+            </form>
+        </div>
+        <p class="login-foot">PHANTOM CARDS · INTERNAL USE ONLY</p>
+    </section>
+
+    <div class="admin-app is-hidden" id="adminApp">
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-brand"><span>✦</span><div>PHANTOM <b>CARDS</b><small>ADMIN CONSOLE</small></div></div>
+            <nav>
+                <p class="nav-label">OPERATIONS</p>
+                <button data-view="overview" class="nav-item active"><i data-lucide="layout-dashboard"></i>Overview</button>
+                <button data-view="users" class="nav-item"><i data-lucide="users"></i>Users</button>
+                <button data-view="cards" class="nav-item"><i data-lucide="layers-3"></i>Cards</button>
+                <button data-view="purchases" class="nav-item"><i data-lucide="shopping-bag"></i>Purchases</button>
+                <p class="nav-label">MONEY</p>
+                <button data-view="deposits" class="nav-item"><i data-lucide="arrow-down-to-line"></i>Deposits</button>
+                <button data-view="transactions" class="nav-item"><i data-lucide="receipt-text"></i>Transactions</button>
+                <button data-view="withdrawals" class="nav-item"><i data-lucide="landmark"></i>Withdrawals<span class="nav-count" id="withdrawalCount"></span></button>
+                <button data-view="reconciliation" class="nav-item"><i data-lucide="split"></i>Reconciliation</button>
+                <button data-view="wallet-credits" class="nav-item"><i data-lucide="wallet-cards"></i>Manual Wallet Credit</button>
+                <p class="nav-label">VERIFICATION</p>
+                <button data-view="kyc" class="nav-item"><i data-lucide="shield-check"></i>KYC<span class="nav-count" id="kycCount"></span></button>
+                <button data-view="redemptions" class="nav-item"><i data-lucide="ticket-check"></i>Redemptions</button>
+                <button data-view="audit" class="nav-item"><i data-lucide="history"></i>Audit Logs</button>
+                <button data-view="support" class="nav-item"><i data-lucide="messages-square"></i>Support</button>
+                <p class="nav-label">SYSTEM</p>
+                <button data-view="settings" class="nav-item"><i data-lucide="settings-2"></i>Settings</button>
+            </nav>
+            <div class="sidebar-footer"><div class="admin-avatar">A</div><div><strong id="sidebarAdmin">Admin</strong><span>Owner</span></div><button id="logoutButton" title="Sign out"><i data-lucide="log-out"></i></button></div>
+        </aside>
+        <main class="main-content">
+            <header class="topbar"><button class="mobile-menu" id="mobileMenu" aria-label="Open navigation"><i data-lucide="menu"></i></button><div><p class="topbar-kicker">PHANTOM CARDS / OPERATIONS</p><h2 id="pageTitle">Overview</h2></div><div class="topbar-actions"><button class="icon-button" id="refreshButton" title="Refresh"><i data-lucide="refresh-cw"></i></button><div class="system-pill"><span></span>System online</div></div></header>
+            <section class="page-content" id="pageContent"></section>
+        </main>
+    </div>
+
+    <div class="overlay" id="overlay"></div>
+    <section class="detail-drawer" id="detailDrawer" aria-modal="true" role="dialog"><button class="drawer-close" id="drawerClose" aria-label="Close"><i data-lucide="x"></i></button><div id="drawerContent"></div></section>
+    <section class="action-modal" id="actionModal" aria-modal="true" role="dialog"><div class="modal-card"><button class="drawer-close" id="actionClose" aria-label="Close"><i data-lucide="x"></i></button><p class="eyebrow" id="actionEyebrow">CONFIRM ACTION</p><h2 id="actionTitle">Confirm action</h2><p id="actionCopy"></p><label>Reason or note<textarea id="actionNote" rows="4" placeholder="Required for operational actions"></textarea></label><div class="modal-actions"><button class="secondary-button" id="actionCancel">Cancel</button><button class="primary-button" id="actionConfirm">Confirm</button></div><p class="form-error" id="actionError"></p></div></section>
+    <div class="toast" id="toast"></div>
+    <script src="/admin.js?v=20260924"></script>
+</body>
+</html>

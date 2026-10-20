@@ -1,0 +1,4 @@
+data/
+*.log
+.env
+payment-service/.env

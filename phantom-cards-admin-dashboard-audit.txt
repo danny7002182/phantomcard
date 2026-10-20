@@ -1,0 +1,1406 @@
+PHANTOM CARDS TECHNICAL AUDIT
+Admin Dashboard Readiness Report
+
+Audit completed in read-only mode. No project files, databases, migrations, packages, or UI assets were modified during the audit.
+
+Test status:
+- Site A: 9 tests passed
+- Site B payment service: 3 tests passed
+
+
+1. PROJECT OVERVIEW
+
+Architecture
+------------
+
+The project is a small custom Node.js application with two runtime services:
+
+1. Site A - user marketplace and account service
+2. Site B - isolated Paystack payment service
+
+Frameworks and infrastructure
+-----------------------------
+
+- Frontend: plain HTML, CSS, and browser JavaScript
+- Backend: native Node.js http server
+- Database: JSON files on disk
+- ORM/query layer: none
+- Payment provider: Paystack through raw HTTP requests using fetch
+- Authentication: custom password hashing and cookie-backed sessions
+- Frontend state: in-memory browser state hydrated from /api/state
+
+There is no React, Vue, Next.js, Express, Fastify, Prisma, Sequelize, PostgreSQL, MySQL, MongoDB, or other formal framework/database layer.
+
+Runtime architecture
+--------------------
+
+Site A:
+
+    Browser
+      |
+      v
+    Site A: server.js
+      |
+      v
+    data/phantom-cards.json
+
+Site B:
+
+    Site A
+      | signed HMAC request
+      v
+    Site B: payment-service/server.js
+      |
+      v
+    Paystack
+      | webhook / verification
+      v
+    Site B
+      | signed HMAC callback
+      v
+    Site A
+
+Site A runs on port 3000 by default. Site B runs on port 4000 by default.
+
+The README describes using HTTPS tunnels such as Cloudflare Tunnel for browser and Paystack testing. No production hosting, deployment manifests, containers, process manager, CI/CD configuration, or backup system is present.
+
+Deployment details are therefore: NOT CLEAR FROM CURRENT IMPLEMENTATION.
+
+Main files
+----------
+
+- index.html - user-facing application markup, styling, legacy inline frontend code, navigation, and page shells
+- app.js - active frontend API bridge and current persisted-product flows
+- server.js - Site A backend, authentication, cards, balances, purchases, redemptions, withdrawals, KYC, and internal payment callbacks
+- payment-service/server.js - Site B Paystack initialization, verification, webhook handling, and callbacks
+- payment-config.js - hardcoded allowed Paystack payment emails
+- data/phantom-cards.json - Site A data store
+- payment-service/data/payment-service.json - Site B data store
+- data/kyc-documents/ - binary KYC document storage
+- test/ - Site A tests
+- payment-service/test/ - Site B tests
+
+
+2. PROJECT DIRECTORY MAP
+
+    .
+    ├── index.html
+    ├── app.js
+    ├── server.js
+    ├── payment-config.js
+    ├── package.json
+    ├── package-lock.json
+    ├── README.md
+    ├── .env
+    ├── .env.example
+    ├── data
+    │   ├── phantom-cards.json
+    │   └── kyc-documents
+    │       └── <userId>
+    │           └── *.bin
+    ├── payment-service
+    │   ├── server.js
+    │   ├── package.json
+    │   ├── .env
+    │   ├── .env.example
+    │   ├── data
+    │   │   └── payment-service.json
+    │   └── test
+    │       └── payment-service.test.js
+    └── test
+        ├── core.test.js
+        ├── purchase-flow.test.js
+        ├── reward-and-payment-flow.test.js
+        └── withdrawal-flow.test.js
+
+Frontend
+--------
+
+index.html contains login, registration, dashboard, shop, card detail, wallet, redeem, withdrawal, KYC, transaction history, withdrawal methods, settings, FAQ, contact, and informational pages.
+
+app.js contains the newer active API-backed flows:
+
+- API wrapper
+- Server-state hydration
+- Login/signup/password reset
+- Wallet deposits
+- Purchases
+- Code reveal
+- Redemptions
+- Withdrawals
+- KYC submissions
+- GHS 70 bypass checkout
+- Transaction rendering
+- Withdrawal history rendering
+- Receipt rendering
+- Background refresh
+
+Important frontend architecture issue: index.html also contains a large older mock-data implementation with random cards, fake transactions, fake methods, fake codes, and placeholder actions. app.js loads afterward and overrides many global functions. This duplicated frontend logic makes it difficult to identify which behavior is authoritative.
+
+
+3. DATABASE / DATA MODEL
+
+There is no relational database. The effective schema is the object structure inside data/phantom-cards.json.
+
+Current persisted Site A data contains approximately:
+
+- 80 cards
+- 12 users
+- 50 sessions
+- 67 deposits
+- 80 purchases
+- 45 daily purchase counter records
+- 80 redemption codes
+- 10 withdrawal methods
+- 33 withdrawal records
+- 261 transactions
+- 261 receipts
+- 1 password reset record
+- 19 KYC bypass payment records
+
+Site B currently contains:
+
+- 54 payment transactions
+- 0 webhook event records
+- 0 request ID records
+
+There are no database-enforced primary keys, unique constraints, indexes, foreign keys, or transactions.
+
+cards
+-----
+
+Generated by makeCards() in server.js.
+
+Important fields:
+
+- id - example CARD-0001; product/card identifier
+- seed
+- title
+- category
+- price
+- priceGhs
+- displayPriceUsd
+- stock
+- active
+- series
+- edition
+- rgb
+- description
+- serial
+- rewardBand
+- rewardMinRate
+- rewardMaxRate
+- rewardMinAmount
+- rewardMaxAmount
+
+Relationships:
+
+- purchases.cardId
+- codes.cardId
+- transaction and receipt related.cardId
+
+Cards are product/catalog records, not individual physical card records. There is no separate inventory-item table.
+
+users
+-----
+
+Important fields:
+
+- id - usr_ plus 18 hexadecimal characters
+- name
+- email
+- phone
+- passwordHash
+- pinHash
+- walletBalance
+- redeemedBalance
+- createdAt
+- contactEmailCapturedAt
+- paystackPaymentEmail
+- kycStatus
+- kycVerifiedAt
+- kycSubmittedAt
+- kycSubmission
+
+Relationships exist by stored string IDs to sessions, deposits, purchases, codes, methods, withdrawals, transactions, receipts, and KYC bypass payments. No foreign keys are enforced.
+
+There is no role, account status, suspension, deletion, email verification, phone verification, or admin flag.
+
+sessions
+--------
+
+Fields:
+
+- token
+- userId
+- expiresAt
+
+The session token is stored directly in the JSON file.
+
+deposits
+--------
+
+Newer records contain:
+
+- id
+- transactionId
+- userId
+- amount
+- amountMinor
+- currency
+- purpose
+- paymentProvider
+- status
+- reference
+- expiresAt
+- callbackRequestIds
+- createdAt
+- updatedAt
+- verifiedAt
+- paystackReference
+- paymentServiceTransactionId
+- authorizationUrl
+
+Expected newer statuses are PENDING, PAYMENT_INITIALIZED, SUCCESS, FAILED, and EXPIRED.
+
+Existing persisted data also contains older records using lowercase success/initialized statuses and missing currency, purpose, amountMinor, and transactionId fields. This is a significant schema compatibility issue.
+
+purchases
+---------
+
+Fields:
+
+- id
+- orderId
+- reference
+- userId
+- cardId
+- idempotencyKey
+- amount
+- amountPaid
+- rewardAmount
+- rewardMultiplier
+- status
+- createdAt
+
+Current purchase status is normally sealed. The purchase status does not appear to change during redemption; redemption state is held separately in codes.status.
+
+dailyPurchaseCounts
+-------------------
+
+Fields:
+
+- id
+- userId
+- priceKey
+- priceUsd
+- purchaseDate
+- count
+
+Used for the limit of two purchases per exact USD price per Ghana calendar day.
+
+codes
+-----
+
+Fields:
+
+- id
+- code
+- userId
+- cardId
+- orderId
+- purchaseId
+- amount
+- purchaseAmount
+- rewardAmount
+- rewardMultiplier
+- status
+- createdAt
+- redeemedAt
+- redemptionReference
+
+Statuses are unused and redeemed. Codes are stored in plaintext.
+
+methods
+-------
+
+Fields:
+
+- id
+- userId
+- network
+- accountName
+- phone
+- isDefault
+- createdAt
+
+Supported networks are MTN Mobile Money, Telecel Cash, and AT Cash. The withdrawal PIN is stored as users.pinHash, not on the method.
+
+withdrawals
+-----------
+
+Important fields:
+
+- id
+- userId
+- methodId
+- amount
+- requestedAmount
+- operationalCharge
+- actualAmount
+- reference
+- status
+- createdAt
+- approvedAt
+- rejectedAt
+- completedAt
+- adminNote
+- kycRequired
+- kycBypassUsed
+- kycBypassFee
+- paymentStatus
+- kycBypassRefunded
+- kycBypassRefundAmount
+- kycBypassRefundReference
+- kycBypassRefundedAt
+- isRefund
+- refundType
+- refundForWithdrawalId
+- refundForWithdrawalReference
+- refundedAt
+
+Statuses found include PENDING_KYC_VERIFICATION, pending, approved, processing, completed, rejected, cancelled, and refunded. Only some have implemented transitions.
+
+transactions
+------------
+
+This is the closest thing to a unified financial ledger.
+
+Fields:
+
+- id
+- userId
+- type
+- entryType
+- amount
+- account
+- reference
+- status
+- reason
+- related
+- createdAt
+
+Accounts are wallet, redeemed, and external. Types are credit and debit. The related object is polymorphic and varies by transaction type.
+
+receipts
+--------
+
+Receipts duplicate most financial transaction records.
+
+Fields:
+
+- id
+- userId
+- type
+- amount
+- account
+- reference
+- status
+- related
+- createdAt
+
+Receipt types include deposit, purchase, redemption, withdrawal, kyc_bypass, and kyc_bypass_refund.
+
+passwordResets
+-------------
+
+Fields:
+
+- id
+- userId
+- tokenHash
+- createdAt
+- expiresAt
+- status
+- usedAt
+
+kycBypassPayments
+-----------------
+
+Fields:
+
+- id
+- userId
+- withdrawalId
+- withdrawalReference
+- amount
+- currency
+- reference
+- status
+- callbackUrl
+- returnOrigin
+- expiresAt
+- callbackRequestIds
+- createdAt
+- updatedAt
+- verifiedAt
+- provider
+- paystackReference
+- paymentServiceTransactionId
+- authorizationUrl
+
+Site B records
+-------------
+
+Site B stores payment attempts in payment-service/data/payment-service.json.
+
+Payment transaction fields include:
+
+- id
+- siteATransactionId
+- siteAUserId
+- amountMinor
+- currency
+- purpose
+- paystackReference
+- status
+- expiresAt
+- createdAt
+- updatedAt
+- customerEmail
+- authorizationUrl
+- returnUrl
+- callbackDeliveredAt
+
+Purposes are WALLET_TOPUP and KYC_BYPASS.
+
+Site B also has intended webhookEvents and requestIds arrays. requestIds does not appear to be actively used for global replay prevention.
+
+Unknown legacy data
+-------------------
+
+data/phantom-cards.json contains a cardPaymentOrders array with zero records. No current source code references it.
+
+Its intended purpose is: NOT CLEAR FROM CURRENT IMPLEMENTATION.
+
+
+4. USER ACCOUNT SYSTEM
+
+Registration
+------------
+
+Endpoint: POST /api/auth/signup
+
+Required:
+
+- Name
+- Mobile number
+- Password
+
+Optional:
+
+- Gmail address
+
+Validation:
+
+- Mobile must match 0\\d{9}
+- Email must be Gmail if supplied
+- Password must be at least six characters
+- Phone must be unique
+- Email must be unique when supplied
+
+The user is created with a random usr_ ID, scrypt password hash, zero balances, NOT_VERIFIED KYC status, no PIN, an assigned Paystack email, and an active session.
+
+User ID format
+--------------
+
+usr_<18 hexadecimal characters>
+
+Login
+-----
+
+POST /api/auth/login accepts either email or mobile number and validates the password against the scrypt hash.
+
+Sessions
+--------
+
+Authentication uses a phantom_session cookie containing a random 64-character hexadecimal token.
+
+Cookie attributes:
+
+- HttpOnly
+- SameSite=Lax
+- Path=/
+- Max-Age=30 days
+- Secure when the request is detected as HTTPS
+
+Sessions are stored in the JSON database. There is no separate authentication server.
+
+Password reset
+--------------
+
+POST /api/auth/forgot and POST /api/auth/reset create and consume hashed reset tokens.
+
+In non-production, the forgot endpoint returns the reset token directly because no mail provider is configured.
+
+Assigned Paystack email
+-----------------------
+
+The only allowed Paystack payment emails are:
+
+- danny700218+1@gmail.com
+- danny700218+2@gmail.com
+
+Assignment is round-robin based on the number of users when they register. The assigned value is stored permanently on the user.
+
+The actual user email and Paystack checkout email are separate. The actual email is used for account contact/login. The assigned Paystack email is used for Paystack checkout.
+
+Account status and verification
+-------------------------------
+
+There is no general account-status field. KYC state and PIN existence are the main account-state indicators.
+
+KYC statuses:
+
+- NOT_VERIFIED
+- PENDING
+- VERIFIED
+- REJECTED
+
+The frontend displays a user as Active unless KYC is rejected.
+
+There is no suspended, banned, closed, email-verified, phone-verified, role, or permission state.
+
+An admin would realistically need user ID, name, phone, actual email, assigned Paystack email, registration date, last activity, balances, KYC history, purchase count/value, redemption count/value, withdrawal history, deposit history, session/security information, and account restrictions. Only some exist now.
+
+
+5. CARD SYSTEM
+
+Card creation
+-------------
+
+Cards are generated by makeCards() in server.js. The initial catalog contains 80 deterministic product records.
+
+Categories:
+
+- Digital
+- Gaming
+- Crypto
+- Collectible
+- Access
+- Exclusive
+- Limited
+- Rare
+
+Prices are stored in GHS. Display USD is calculated using a fixed GHS 12 per USD conversion.
+
+Inventory
+---------
+
+Each card has stock and active. active is recalculated as stock > 0 during catalog synchronization. Purchases decrement stock and set active false when stock reaches zero.
+
+There is no separate inventory-item table, inventory movement history, admin card creation API, or explicit pause flag. Because active is derived from stock, manually pausing a card is not currently supported reliably.
+
+Ownership and lifecycle
+-----------------------
+
+A purchased card is represented by a purchase and a code record linked through userId, cardId, purchaseId, and orderId.
+
+Purchases normally start as sealed. The code status changes from unused to redeemed. The purchase status itself generally remains sealed.
+
+Codes are generated as two uppercase letters plus twelve uppercase alphanumeric characters. Codes are stored in plaintext.
+
+Card expiration
+---------------
+
+There is no expiration field, expiry date, or expiration process. NOT CLEAR FROM CURRENT IMPLEMENTATION whether expiration was intended.
+
+Reward multiplier
+-----------------
+
+Current backend range: 3.52x to 4.42x.
+
+The reward is selected during purchase and stored on purchase and code records. The final reward amount is purchase amount multiplied by the selected multiplier.
+
+Historical records contain older multipliers. The migration preserves historical reward snapshots. Unused legacy codes with invalid old multipliers can be recalculated at redemption; completed redemptions are not rewritten.
+
+Frontend responsibility
+----------------------
+
+The frontend displays the server-provided reward range and does not calculate the final reward. The backend is authoritative.
+
+Admin card requirements
+----------------------
+
+An admin would need catalog, pricing, reward configuration, stock, sold count, redemption count, unredeemed-code count, reward liability, restocking, pausing, and audit/versioning. These capabilities do not currently exist.
+
+
+6. REWARD SYSTEM
+
+Current range: 3.52x to 4.42x.
+
+The range is defined in server.js through REWARD_MULTIPLIER_MIN, REWARD_MULTIPLIER_MAX, and REWARD_BANDS.
+
+Formula:
+
+    rewardAmount = purchaseAmountGhs * selectedMultiplier
+
+The result is rounded to two decimal places.
+
+The reward is allocated during POST /api/purchases and persisted to purchase and code records. It is credited only during POST /api/redemptions.
+
+Completed redemptions are historical snapshots and are not rewritten. There is no admin reward-adjustment API.
+
+The frontend displays the potential range before purchase and the final reward after redemption. It does not control the financial calculation.
+
+An admin should monitor multiplier distribution, total purchased value, total redeemed reward value, unredeemed liability, reward-to-purchase ratios, and historical versus current configurations.
+
+
+7. WALLET / BALANCE SYSTEM
+
+WALLET BALANCE
+--------------
+
+Field: users.walletBalance
+
+Purpose: funds card purchases.
+
+Money enters through successful wallet top-ups. Legacy/test records may also credit it directly.
+
+Money leaves through card purchases.
+
+It cannot be withdrawn.
+
+WALLET BALANCE transactions use account=wallet.
+
+REDEEMED BALANCE
+----------------
+
+Field: users.redeemedBalance
+
+Purpose: holds redemption rewards and funds withdrawals.
+
+Money enters through successful redemptions and rejected-withdrawal restoration.
+
+Money leaves through withdrawal holds.
+
+REDEEMED BALANCE transactions use account=redeemed.
+
+EXTERNAL ACCOUNT
+----------------
+
+Used for the GHS 70 bypass fee and GHS 70 refund. External transactions do not affect either user balance.
+
+Important balance behavior
+--------------------------
+
+A withdrawal request immediately deducts the requested amount from Redeemed Balance. If rejected, the requested amount is returned directly to the balance, but there is no separate balance-credit transaction.
+
+normalizeDb() rebuilds balances from qualifying transactions, which is complex and status-dependent. There is no formal ledger or balance snapshot history.
+
+
+8. TOP-UP / PAYSTACK SYSTEM
+
+User entry point
+----------------
+
+Frontend: app.js -> POST /api/deposits
+Backend: server.js -> POST /api/deposits
+
+The frontend offers preset amounts from GHS 30 to GHS 500. The backend accepts any amount of at least GHS 30.
+
+Site A top-up flow
+------------------
+
+1. Authenticate user
+2. Validate amount
+3. Capture Gmail contact email if missing
+4. Create pending deposit record
+5. Generate unique Site A transaction ID
+6. Generate deposit reference
+7. Set expiry, normally 15 minutes
+8. Send signed request to Site B
+
+Site A to Site B authentication uses Bearer secret, request ID, timestamp, and HMAC-SHA256 over timestamp.requestId.rawJson.
+
+Site B initialization
+---------------------
+
+POST /api/v1/payments/initialize validates the request, calls Site A internal lookup, reconciles user/amount/currency/purpose/customer email, creates a Paystack transaction, stores it, and returns an authorization URL.
+
+Paystack customer email is always one of the two hardcoded allowed emails and is not the user’s actual email.
+
+Paystack metadata contains site, Site A transaction ID, Site A user ID, and purpose.
+
+Paystack webhook
+----------------
+
+POST /api/v1/webhooks/paystack validates raw-body HMAC-SHA512 using PAYSTACK_SECRET_KEY. It checks event ID duplication, reference, amount, currency, metadata, Site A IDs, and purpose.
+
+Relevant events are charge.success and charge.failed. Other event types do not appear to update payment status.
+
+Site B to Site A callback
+-------------------------
+
+Wallet callback: POST /api/v1/webhooks/payment-status.
+
+Site A only credits Wallet Balance after a reconciled SUCCESS callback.
+
+Wallet credit creates a wallet transaction and deposit receipt and is protected by terminal status/reference checks and callback IDs.
+
+Multiple attempts
+-----------------
+
+Every top-up creates a new attempt. Multiple attempts for the same amount are allowed.
+
+Potential weaknesses
+--------------------
+
+- No admin reconciliation interface
+- Limited callback retry behavior
+- No visible scheduled expiry/reconciliation worker
+- Site B requestIds storage is not actively used for global replay protection
+- Failed initialization can leave a pending Site A record
+- Existing persisted deposit records use incompatible legacy fields/statuses
+
+Frontend return mismatch
+------------------------
+
+Site B redirects using a wallet_topup query parameter containing the Site A transaction ID. app.js expects wallet_topup plus a separate transactionId parameter. Therefore browser confirmation can fail even when the webhook successfully credits the wallet.
+
+Broken recovery flow
+--------------------
+
+The frontend calls POST /api/deposits/:reference/verify, but no such backend endpoint exists. The frontend labels the input as a Paystack reference, while the backend status endpoint expects a Site A transaction ID.
+
+
+9. CARD PURCHASE SYSTEM
+
+Entry point: POST /api/purchases.
+
+The backend checks authentication, idempotency key, card availability, stock, minimum wallet balance, sufficient wallet balance, and the daily exact-price quota.
+
+Card purchases use Wallet Balance and do not use Paystack.
+
+The backend:
+
+1. Debits Wallet Balance
+2. Decrements stock
+3. Updates active state
+4. Creates purchase record
+5. Updates daily purchase count
+6. Generates code
+7. Creates purchase transaction
+8. Creates purchase receipt
+9. Saves JSON
+
+Each user may buy at most two cards per exact USD price per Ghana calendar day. Different cards with the same price share the same quota.
+
+Purchase idempotency uses userId plus idempotencyKey. The frontend persists keys in localStorage, and the backend serializes purchase mutations within one process.
+
+There is no cross-process protection, external card payment, or separate purchase fulfillment service.
+
+
+10. REDEMPTION SYSTEM
+
+Endpoint: POST /api/redemptions.
+
+The backend normalizes and validates the code, finds it, verifies ownership, verifies unused status, resolves the purchase/card, resolves the reward snapshot, changes status to redeemed, sets redeemedAt, creates redemption reference, credits Redeemed Balance, and creates transaction and receipt.
+
+A different user cannot redeem the code. A redeemed code cannot be redeemed again.
+
+The frontend handles formatting, confirmation, and display. The backend owns all financial and ownership decisions.
+
+
+11. WITHDRAWAL SYSTEM
+
+Eligibility
+-----------
+
+The user must have at least three lifetime redeemed cards, a saved method, at least GHS 10 requested, sufficient Redeemed Balance, and a valid four-digit PIN.
+
+There is no maximum withdrawal rule and no lifetime purchase-count requirement.
+
+Fee
+---
+
+operationalCharge = requestedAmount * 10%
+actualAmount = requestedAmount - operationalCharge
+
+The full requested amount is deducted from Redeemed Balance. The record stores both requested and net amounts.
+
+Methods
+-------
+
+MTN Mobile Money, Telecel Cash, and AT Cash are supported.
+
+PIN
+---
+
+The first method creation sets the user PIN. Later method creation and withdrawal require the PIN. PINs are scrypt-hashed.
+
+Statuses
+--------
+
+Unverified users begin at PENDING_KYC_VERIFICATION. Verified users begin at pending. Existing constants include approved, processing, completed, rejected, cancelled, and refunded, but not all transitions are implemented.
+
+Admin approval
+--------------
+
+POST /api/admin/withdrawals/:reference/approve changes pending to approved and stores an admin note.
+
+POST /api/admin/withdrawals/:reference/reject returns the requested amount to Redeemed Balance, changes the status to rejected, and stores an admin note.
+
+There is no payout completion implementation in the current code. NOT CLEAR FROM CURRENT IMPLEMENTATION how existing completed records were finalized.
+
+KYC
+---
+
+POST /api/kyc/submissions accepts exactly two JPEG, PNG, or PDF documents up to 5 MB each. Documents are stored as binary files under data/kyc-documents/<userId>/ and metadata is stored in one user.kycSubmission object.
+
+POST /api/admin/users/:userId/kyc/verify sets the user to VERIFIED and releases all that user’s PENDING_KYC_VERIFICATION withdrawals to pending.
+
+POST /api/admin/users/:userId/kyc/reject sets the user to REJECTED but does not automatically reject withdrawals, return held funds, or store a separate decision record.
+
+Review timing of 24-72 business hours is frontend copy only. Backend SLA behavior is NOT CLEAR FROM CURRENT IMPLEMENTATION.
+
+GHS 70 bypass
+-------------
+
+The bypass creates a kycBypassPayment, initializes a Paystack checkout through Site B, and waits for a signed callback.
+
+Successful callback:
+
+- Sets payment status to success
+- Marks withdrawal kycBypassUsed
+- Sets fee to GHS 70
+- Sets paymentStatus to success
+- Changes withdrawal to approved
+- Sets autoApprovedReason to kyc_bypass_fee_paid
+
+The account remains NOT_VERIFIED or otherwise unchanged from a KYC perspective.
+
+Refund
+------
+
+Successful bypass creates an external GHS 70 debit and a separate external GHS 70 refund. The refund is represented in withdrawal history, transactions, and receipts. It does not credit Redeemed Balance.
+
+Original withdrawal and refund are linked through IDs and references.
+
+
+12. TRANSACTION SYSTEM
+
+Multiple financial systems exist rather than one complete accounting model.
+
+Unified Site A transactions
+---------------------------
+
+- Wallet top-up: credit, wallet account
+- Card purchase: debit, wallet account
+- Redeemed code: credit, redeemed account
+- Withdrawal: debit, redeemed account
+- KYC bypass fee: debit, external account
+- KYC Fee Refund: credit, external account, REFUND entry type
+
+Purchase transactions link through cardId and orderId. Redemption transactions link through cardId, orderId, purchase amount, reward amount, and multiplier. Withdrawal transactions link through withdrawalId and methodId. Refund transactions link through original withdrawal and payment references.
+
+Receipts duplicate transaction data. Deposits, purchases, withdrawals, codes, KYC payments, and Site B transactions are separate source records joined by string references.
+
+There is no true unified accounting model, no double-entry ledger, no balance-after field, no status-transition history, and no payout-provider transaction model.
+
+Rejected withdrawals return funds directly without creating a separate reversal transaction.
+
+
+13. EXISTING API ENDPOINTS / SERVER ACTIONS
+
+Public/system:
+
+- GET /api/health - health/configuration status; no auth
+- GET /api/config - public business rules; no auth
+
+Authentication:
+
+- POST /api/auth/signup - creates account and session; no auth
+- POST /api/auth/login - authenticates by email or phone; no auth
+- POST /api/auth/logout - deletes current session; session required
+- POST /api/auth/forgot - creates reset token; no auth
+- POST /api/auth/reset - resets password; reset token required
+- POST /api/auth/password - changes password; session required
+- POST /api/auth/pin - creates/changes PIN; session required
+
+User state:
+
+- GET /api/state - authenticated user state; session required
+
+Deposits:
+
+- POST /api/deposits - creates wallet top-up attempt; session required
+- GET /api/deposits/:transactionId - returns owner’s top-up state; session and ownership required
+
+Purchases/cards:
+
+- POST /api/purchases - wallet purchase; session required
+- POST /api/purchases/:purchaseId/code - reveals unused code; session and ownership required
+
+Redemption:
+
+- POST /api/redemptions - validates and redeems code; session required
+
+Methods:
+
+- POST /api/methods - creates withdrawal method; session required
+
+Withdrawals:
+
+- POST /api/withdrawals - creates withdrawal; session required
+- POST /api/withdrawals/:reference/kyc-bypass - initializes bypass payment; session and ownership required
+- POST /api/kyc-bypass-payments/:reference/verify - returns successful bypass result; session and ownership required
+
+KYC:
+
+- POST /api/kyc/submissions - uploads KYC data/documents; session required
+
+Internal signed endpoints:
+
+- POST /api/v1/internal/topups/lookup - Site B validates a top-up
+- POST /api/v1/internal/kyc-bypass/lookup - Site B validates a bypass payment
+- POST /api/v1/webhooks/payment-status - Site B callback for top-up
+- POST /api/v1/webhooks/kyc-bypass-payment-status - Site B callback for bypass
+
+Existing admin mutation endpoints:
+
+- POST /api/admin/withdrawals/:reference/approve
+- POST /api/admin/withdrawals/:reference/reject
+- POST /api/admin/users/:userId/kyc/verify
+- POST /api/admin/users/:userId/kyc/reject
+
+These use a shared ADMIN_APPROVAL_TOKEN rather than admin accounts.
+
+Site B endpoints:
+
+- GET /api/health
+- GET /payment/return
+- POST /api/v1/payments/initialize
+- POST /api/v1/webhooks/paystack
+- POST /api/v1/payments/:reference/complete
+
+
+14. EXISTING ADMIN FUNCTIONALITY
+
+Admin backend functionality exists only in server.js.
+
+Implemented:
+
+- Static admin token authentication
+- Withdrawal approval
+- Withdrawal rejection
+- KYC verification
+- KYC rejection
+- Some admin notes
+- Console logging
+
+There is no admin page, admin route, admin component, admin session, admin user table, admin role model, permission model, admin list endpoint, user search endpoint, card management endpoint, transaction reporting endpoint, KYC document endpoint, audit log, admin notification system, or payout completion endpoint.
+
+The .env.example includes ADMIN_APPROVAL_TOKEN, but the current .env does not. Existing admin endpoints therefore appear unavailable unless that value is injected externally.
+
+The authorization is a shared static token, not admin authentication. There is no distinction between super administrators, finance staff, KYC reviewers, support staff, or inventory managers.
+
+
+15. MISSING ADMIN CAPABILITIES
+
+A. UI/admin dashboard features
+------------------------------
+
+Likely required areas:
+
+- Dashboard overview
+- User management
+- Card catalog and inventory
+- Purchases
+- Redemptions
+- Wallet/deposits
+- Withdrawals/payouts
+- KYC queue
+- Transactions/ledger
+- Refunds
+- Paystack operations
+- Settings
+- Admin access and audit logs
+
+The exact features should be finalized after deciding whether this remains a prototype or becomes a production financial operation.
+
+B. Backend/API capabilities
+---------------------------
+
+Required additions include:
+
+- Admin authentication and sessions
+- RBAC and permissions
+- Pagination/search/filter/sort
+- User list/detail APIs
+- Card and inventory APIs
+- Purchase and redemption detail APIs
+- Deposit/payment reconciliation APIs
+- Withdrawal queue/detail APIs
+- KYC queue and secure document APIs
+- Transaction/ledger APIs
+- Refund APIs
+- Dashboard aggregate APIs
+- Audit APIs
+- Payout-processing APIs
+- Export/report APIs
+
+C. Security/permissions
+-----------------------
+
+Permissions should separate user viewing, financial viewing, KYC document viewing, KYC review, withdrawal approval, payout completion, refunds, card management, reward configuration, admin management, and data export.
+
+
+16. ADMIN DASHBOARD DATA REQUIREMENTS
+
+Admin Feature | Existing Data Available? | Existing API? | New Backend Work Needed? | Notes
+-------------|---------------------------|---------------|--------------------------|------
+Dashboard overview | Partially | No | Yes | Data is spread across Site A and Site B
+User list | Yes | No | Yes | users exists but no list endpoint
+User detail | Yes | No | Yes | Requires joins across records
+User search | Yes | No | Yes | No query API or indexes
+Wallet balances | Yes | No | Yes | Stored directly on users
+Redeemed balances | Yes | No | Yes | Stored directly on users
+Card catalog | Yes | No | Yes | Cards are only exposed through user state
+Card stock | Yes | No | Yes | No admin mutation support
+Card pricing | Yes | No | Yes | No versioning or audit
+Purchase list | Yes | No | Yes | purchases exists
+Purchase detail | Yes | No | Yes | Requires card/user/code relationships
+Redemption list | Yes | No | Yes | codes and transactions exist
+Redemption reward detail | Yes | No | Yes | Snapshot data exists
+Deposit list | Yes | No | Yes | Legacy schemas are inconsistent
+Paystack attempts | Yes | No | Yes | Site B data is separate
+Webhook events | Intended | No | Yes | No admin visibility
+Withdrawal queue | Yes | No | Yes | Admin mutations exist, read API absent
+Withdrawal approval | Yes | Limited POST | Partial | Static token only
+Withdrawal rejection | Yes | Limited POST | Partial | No admin identity or audit
+Payout completion | Partial | No | Yes | Status exists but transition API absent
+KYC queue | Yes | No | Yes | Pending users contain embedded submissions
+KYC documents | Files exist | No | Yes | Secure document endpoint required
+KYC approval | Yes | POST exists | Partial | Static token only
+KYC rejection | Yes | POST exists | Partial | No decision reason/history
+KYC review history | No | No | Yes | Only current mutable snapshot exists
+KYC bypass payments | Yes | No | Yes | Must be joined to withdrawals
+Refunds | Yes | No | Yes | Spread across records
+Transactions | Partially | No | Yes | Multiple systems and schemas
+Receipts | Yes | No | Yes | No admin access
+Financial reconciliation | Partially | No | Yes | Cross-service matching required
+Analytics | Raw data only | No | Yes | No aggregation layer
+Audit logs | No | No | Yes | Must be created
+Admin roles | No | No | Yes | Must be created
+Account suspension | No | No | Yes | No account-status model
+Exports | Raw JSON only | No | Yes | No controlled export API
+
+
+17. IMPORTANT ARCHITECTURAL RISKS
+
+1. Flat-file persistence: all Site A data is one JSON document with no transactions, indexes, locking, or safe multi-instance behavior.
+
+2. Only purchase mutations are explicitly serialized. Redemptions, withdrawals, KYC actions, admin changes, and payment callbacks do not use the same mutation queue.
+
+3. No relational integrity. Records can become orphaned because IDs are only strings.
+
+4. Multiple financial systems. Direct balances, transactions, receipts, deposits, purchases, withdrawals, KYC payments, and Site B payment records are not one accounting system.
+
+5. Rejected withdrawals lack a reversal transaction. Funds are returned directly to the balance and only metadata indicates the return.
+
+6. Status inconsistency. The system mixes uppercase, lowercase, and legacy statuses such as SUCCESS/success and PAYMENT_INITIALIZED/initialized.
+
+7. Historical reward inconsistency. Existing multipliers differ from the current 3.52-4.42 range, requiring historical/current distinction.
+
+8. Hardcoded business rules. Paystack emails, exchange rate, reward range, fees, limits, and thresholds are embedded in code.
+
+9. Weak admin authorization. One shared static token provides no identity, roles, MFA, or action ownership.
+
+10. The current admin token is not configured in the repository’s current .env.
+
+11. No KYC document access layer. Files exist but no secure admin retrieval endpoint exists.
+
+12. No KYC decision history. A single mutable user.kycSubmission object can be overwritten.
+
+13. No payout completion flow. processing/completed/cancelled are not fully implemented.
+
+14. Payment callback replay handling is incomplete. Per-payment callback IDs exist, but Site B global request ID storage is not actively enforced.
+
+15. Payment retry behavior is limited. No visible scheduled callback retry/reconciliation worker exists.
+
+16. Top-up browser return mismatch. Site B and app.js expect different query parameter formats.
+
+17. Broken deposit recovery endpoint. The frontend calls an endpoint that does not exist and uses a different reference concept than the backend.
+
+18. Duplicate frontend implementations. index.html contains old mock flows while app.js contains current API-backed flows.
+
+19. Sensitive plaintext values exist in JSON, including session tokens, redemption codes, payment references, and withdrawal details.
+
+20. No complete audit trail exists for administrative actions.
+
+
+18. RECOMMENDED ADMIN DATA MODEL
+
+The existing data model is sufficient for a prototype read-only admin view but not for a reliable production financial/admin system.
+
+A relational database should be strongly considered.
+
+Recommended models include:
+
+admin_users
+- ID, name, email, password hash, status, last login, MFA, created timestamp
+
+admin_roles
+- Role ID, role name, permissions
+
+admin_sessions
+- Session ID, admin ID, token hash, expiry, revoked time, IP, user agent
+
+audit_logs
+- Admin ID, action, entity type, entity ID, previous value, new value, reason, IP, timestamp
+
+users
+- Account status, last login/activity, email/phone verification, suspension and deletion metadata
+
+kyc_submissions
+- Submission ID, user, withdrawal, identity data, status, timestamps, reviewer, reason
+
+kyc_documents
+- Submission, type, secure storage key, MIME type, hash, size, retention metadata
+
+cards
+- Product data, price, reward configuration, active state, created/updated timestamps
+
+card_inventory
+- Quantity, movement type, reference, admin actor, timestamp
+
+redemption_codes
+- Purchase, user, encrypted/hashed code, status, reward snapshot, redemption timestamp
+
+wallet_accounts
+- User, account type, currency, current balance, status
+
+ledger_entries
+- Account, transaction, debit/credit, amount, currency, balance after, source, timestamp
+
+payment_attempts
+- User, purpose, provider, all references, amount, currency, status, expiry, verification, callback state, failure reason
+
+payment_webhook_events
+- Provider event ID, signature state, payload hash, raw payload reference, processing state, errors, timestamps
+
+withdrawals
+- Status history, reviewer, payout provider reference, payout timestamps, failure/reversal data
+
+refunds
+- Original transaction, original withdrawal, type, amount, provider reference, status, timestamps
+
+system_settings
+- Versioned business rules, effective date, changed by, previous value
+
+
+19. RECOMMENDED ADMIN DASHBOARD INFORMATION ARCHITECTURE
+
+1. Dashboard
+
+Overview of users, balances, deposits, purchases, redemptions, withdrawals, KYC, inventory, refunds, and payment failures.
+
+2. Users
+
+Searchable users with profile, balances, KYC, purchases, redemptions, deposits, withdrawals, methods, payment references, and activity.
+
+3. Cards and Inventory
+
+Catalog, prices, stock, reward ranges, active state, sales, redemption counts, liability, restocking, pausing, and inventory history.
+
+4. Purchases
+
+Orders, users, cards, amounts, wallet debits, reward snapshots, code state, timestamps, idempotency, and receipts.
+
+5. Redemptions
+
+Codes, users, cards, purchases, reward values, multipliers, redemption status, and timestamps.
+
+6. Wallet / Deposits
+
+Payment attempts, successful/failed/expired states, Paystack references, Site B IDs, callbacks, and wallet credits.
+
+7. Withdrawals / Payouts
+
+KYC-pending, pending, approved, processing, completed, rejected, methods, requested amount, fees, net payout, notes, bypass, refunds, and payout completion.
+
+8. KYC
+
+Pending submissions, documents, associated withdrawals, decisions, reviewer, rejection reasons, and review history.
+
+9. Transactions / Ledger
+
+Unified view of wallet, redeemed, external, credits, debits, references, statuses, related records, and reconciliation.
+
+10. Refunds
+
+GHS 70 bypass fees, original payments, original withdrawals, refund references, amounts, and statuses.
+
+11. Paystack / Payment Operations
+
+Site B transactions, Paystack references, webhooks, callbacks, mismatches, verification attempts, failures, and expired sessions.
+
+12. Settings and Access
+
+Admin users, roles, permissions, business configuration, Paystack state, reward settings, limits, and audit logs.
+
+
+20. KEY FILES TO KNOW
+
+Frontend
+--------
+
+- index.html - pages, navigation, legacy frontend implementation
+- app.js - active API-backed user flows and state mapping
+
+Backend
+-------
+
+- server.js - all Site A routes and business logic
+- README.md - intended two-service payment architecture
+- .env.example - Site A configuration
+
+Database/data
+-------------
+
+- data/phantom-cards.json - all Site A records
+- data/kyc-documents/ - binary KYC files
+- payment-service/data/payment-service.json - Site B payment records
+
+Authentication
+--------------
+
+- server.js - hashing, sessions, login/signup/logout, password reset, PINs
+- app.js - authentication UI flows
+
+Paystack
+--------
+
+- payment-config.js - allowed Paystack emails
+- server.js - Site A payment initialization and callbacks
+- payment-service/server.js - Paystack API, webhook validation, verification, and redirects
+- payment-service/.env.example - payment-service configuration
+
+Cards
+-----
+
+- server.js - card generation, catalog synchronization, purchases, reward logic
+- app.js - card display and purchase UI
+- index.html - shop markup and legacy card logic
+
+Wallet
+------
+
+- server.js - balance and deposit logic
+- app.js - wallet UI, deposit UI, transaction rendering
+- data/phantom-cards.json - wallet balances, deposits, transactions
+
+Withdrawal
+----------
+
+- server.js - withdrawal creation, approval, rejection, bypass, refund logic
+- app.js - withdrawal UI and status history
+- test/withdrawal-flow.test.js - tested withdrawal and bypass behavior
+
+KYC
+---
+
+- server.js - KYC submission, document persistence, admin verify/reject
+- app.js - KYC upload and submission UI
+- data/kyc-documents/ - stored files
+- data/phantom-cards.json - KYC status and submission metadata
+
+Transaction system
+------------------
+
+- server.js - transaction(), receipt(), transactionAffectsBalance(), migration, and balance reconstruction
+- app.js - user-facing transaction filters and display
+- data/phantom-cards.json - Site A transactions and receipts
+- payment-service/server.js - Site B payment attempts and webhook records
+
+
+ADMIN DASHBOARD READINESS
+
+Overall readiness: LOW
+
+Strongest parts
+---------------
+
+- User-side flows are implemented end-to-end.
+- Passwords and PINs are hashed with scrypt.
+- Wallet and Redeemed Balance are conceptually separated.
+- Purchase idempotency exists.
+- Purchase mutation serialization exists within one process.
+- Paystack secrets are isolated in Site B.
+- Site A/Site B communication uses signed requests.
+- Paystack webhooks use raw-body HMAC-SHA512 validation.
+- GHS 70 bypass refunds are separated from Redeemed Balance.
+- Rewards are primarily calculated by the backend.
+- Tests cover purchases, redemptions, top-ups, callbacks, KYC bypass, and refunds.
+
+Biggest blockers
+----------------
+
+- No admin frontend
+- No admin read APIs
+- No real admin authentication
+- No roles or permissions
+- No KYC document access endpoint
+- No unified administrative query layer
+- Flat JSON persistence
+- No payout completion flow
+- No audit logging
+- Inconsistent legacy data schemas
+
+Biggest risks
+-------------
+
+- Difficulty proving where money came from or went
+- Cross-service payment reconciliation gaps
+- Direct balance mutation without complete reversal records
+- Shared static admin token
+- Historical/current reward ambiguity
+- Duplicate financial representations
+- Unsafe scaling beyond one process
+- Broken/stale frontend payment recovery flows
+- Missing KYC decision history
+- Sensitive records stored in plaintext JSON
+
+Most important backend changes before admin development
+-------------------------------------------------------
+
+1. Define canonical statuses and normalize legacy records.
+2. Create a relational persistence layer or robust repository abstraction.
+3. Introduce admin authentication and RBAC.
+4. Create unified paginated admin read APIs.
+5. Add audit logs for all administrative actions.
+6. Separate KYC submissions/documents/decisions into durable records.
+7. Create a unified payment-attempt and reconciliation model.
+8. Add proper ledger entries and reversal/refund records.
+9. Implement withdrawal processing and completion states.
+10. Add secure KYC document access.
+11. Resolve frontend/backend top-up callback inconsistencies.
+12. Remove or isolate obsolete mock frontend logic.
+13. Add card inventory and configuration versioning.
+14. Add payment webhook retry and reconciliation tooling.
+
+Recommended implementation order
+---------------------------------
+
+1. Domain and data-model normalization
+2. Database/repository foundation
+3. Admin authentication and permissions
+4. Unified admin read APIs
+5. Withdrawal and KYC operational workflows
+6. Payment reconciliation and refund operations
+7. Card and inventory management
+8. Transaction/ledger views
+9. Dashboard analytics
+10. Admin UI polish and advanced reporting
+
