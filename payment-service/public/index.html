@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Buy mobile data bundles for Ghana's leading networks.">
+  <title>PulseData Ghana — Stay connected</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="announcement">
+    <div class="shell announcement-inner">
+      <span class="announcement-dot"></span>
+      <span>Fast, simple data bundles for Ghana</span>
+      <span class="announcement-note">Secure checkout coming soon</span>
+    </div>
+  </div>
+
+  <header class="site-header">
+    <div class="shell nav-wrap">
+      <a class="brand" href="#top" aria-label="PulseData Ghana home">
+        <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
+        <span>pulse<span class="brand-accent">data</span></span>
+      </a>
+      <nav class="main-nav" aria-label="Main navigation">
+        <a class="active" href="#bundles">Bundles</a>
+        <a href="#how-it-works">How it works</a>
+        <a href="#help">Help</a>
+      </nav>
+      <button class="menu-button" type="button" aria-label="Open menu" aria-expanded="false">
+        <span></span><span></span><span></span>
+      </button>
+      <a class="nav-action" href="#bundles">Find a bundle <span aria-hidden="true">↗</span></a>
+    </div>
+  </header>
+
+  <main id="top">
+    <section class="hero shell">
+      <div class="hero-copy">
+        <div class="eyebrow"><span class="eyebrow-line"></span> MOBILE DATA, MADE EASY</div>
+        <h1>Stay connected,<br><em>wherever you go.</em></h1>
+        <p class="hero-text">Choose a bundle from your favourite network and keep life moving. Clear pricing, flexible plans, zero guesswork.</p>
+        <div class="hero-actions">
+          <a class="button button-primary" href="#bundles">Browse bundles <span aria-hidden="true">↓</span></a>
+          <a class="text-link" href="#how-it-works">How it works <span aria-hidden="true">→</span></a>
+        </div>
+        <div class="trust-row" aria-label="Service features">
+          <span><i class="check">✓</i> GHS pricing</span>
+          <span><i class="check">✓</i> All major networks</span>
+          <span><i class="check">✓</i> Simple checkout</span>
+        </div>
+      </div>
+      <div class="hero-art" aria-label="Illustration of a phone and network signal">
+        <div class="sun-glow"></div>
+        <div class="signal signal-one"></div>
+        <div class="signal signal-two"></div>
+        <div class="signal signal-three"></div>
+        <div class="phone-shadow"></div>
+        <div class="phone">
+          <div class="phone-speaker"></div>
+          <div class="phone-screen">
+            <div class="screen-top"><span>9:41</span><span>•••</span></div>
+            <div class="screen-title">Your data,<br><strong>your way.</strong></div>
+            <div class="screen-chart"><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
+            <div class="screen-balance"><small>AVAILABLE DATA</small><strong>12.4 <b>GB</b></strong></div>
+            <div class="screen-progress"><span></span></div>
+            <div class="screen-footer"><span>PulseData</span><span>•••</span></div>
+          </div>
+        </div>
+        <div class="floating-chip chip-network"><span class="chip-icon">◒</span><span><small>NETWORKS</small><strong>MTN · TELECEL · AT</strong></span></div>
+        <div class="floating-chip chip-speed"><span class="chip-icon">↯</span><span><small>FAST &amp; EASY</small><strong>Always connected</strong></span></div>
+      </div>
+    </section>
+
+    <section id="bundles" class="bundle-section shell">
+      <div class="section-heading">
+        <div><div class="eyebrow"><span class="eyebrow-line"></span> FIND YOUR FIT</div><h2>Choose your network.</h2></div>
+        <p>Pick a network, choose a plan, and enter the number you want to keep connected.</p>
+      </div>
+      <div class="network-tabs" role="tablist" aria-label="Choose a mobile network">
+        <button class="network-tab active" type="button" role="tab" aria-selected="true" data-network="mtn"><span class="network-logo mtn-logo">MTN</span><span>MTN Ghana</span><b>→</b></button>
+        <button class="network-tab" type="button" role="tab" aria-selected="false" data-network="telecel"><span class="network-logo telecel-logo">T</span><span>Telecel</span><b>→</b></button>
+        <button class="network-tab" type="button" role="tab" aria-selected="false" data-network="airteltigo"><span class="network-logo airteltigo-logo">A</span><span>AirtelTigo</span><b>→</b></button>
+      </div>
+      <div class="bundle-workspace">
+        <div class="plans-panel">
+          <div class="panel-top"><div><span class="panel-label">POPULAR PLANS</span><h3 id="network-title">MTN bundles</h3></div><span class="live-pill"><i></i> Available plans</span></div>
+          <div id="plan-grid" class="plan-grid"></div>
+        </div>
+        <aside class="order-panel" aria-labelledby="order-title">
+          <div class="order-panel-top"><span class="panel-label">YOUR ORDER</span><span class="order-step">01 / 02</span></div>
+          <h3 id="order-title">Bundle details</h3>
+          <form id="bundle-form">
+            <label for="recipient">Recipient number</label>
+            <div class="phone-input"><span>+233</span><input id="recipient" name="recipient" inputmode="numeric" autocomplete="tel" placeholder="024 000 0000" maxlength="10" required><span class="input-status" aria-hidden="true">✓</span></div>
+            <p class="field-help">Enter the Ghana number to receive the bundle.</p>
+            <div class="selected-plan" id="selected-plan"><span class="selected-icon">◒</span><span><small>SELECTED PLAN</small><strong id="selected-name">MTN 1 GB · Data bundle</strong></span><button id="change-plan" type="button" aria-label="Change selected plan">Change</button></div>
+            <div class="order-total"><span>Total</span><strong id="selected-price">GHS 4.00</strong></div>
+            <button class="button button-primary full-width" type="submit">Review bundle <span aria-hidden="true">→</span></button>
+            <p class="secure-note"><span aria-hidden="true">⌁</span> You will review your details before any payment.</p>
+          </form>
+        </aside>
+      </div>
+    </section>
+
+    <section id="how-it-works" class="steps-section">
+      <div class="shell">
+        <div class="section-heading centered"><div><div class="eyebrow"><span class="eyebrow-line"></span> THREE SIMPLE STEPS <span class="eyebrow-line"></span></div><h2>Connected in a few taps.</h2></div><p>No complicated menus. Just pick a plan and get on with your day.</p></div>
+        <div class="steps-grid">
+          <article class="step-card"><span class="step-number">01</span><div class="step-icon">⌕</div><h3>Choose a network</h3><p>Browse plans from MTN, Telecel, and AirtelTigo in one place.</p></article>
+          <article class="step-card featured-step"><span class="step-number">02</span><div class="step-icon">▣</div><h3>Pick your bundle</h3><p>Find a plan that fits your day, week, or month — with pricing in GHS.</p></article>
+          <article class="step-card"><span class="step-number">03</span><div class="step-icon">↗</div><h3>Stay connected</h3><p>Review your number and order details before completing checkout.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section id="help" class="help-section shell">
+      <div class="help-card"><div><div class="eyebrow"><span class="eyebrow-line"></span> NEED A HAND?</div><h2>We keep things clear.</h2><p>Pay securely with Paystack, then your bundle is manually purchased for the number you provide. Delivery usually takes 2–5 minutes after payment confirmation.</p></div><a class="button button-dark" href="mailto:help@pulsedata.example">Contact support <span aria-hidden="true">↗</span></a></div>
+    </section>
+  </main>
+
+  <footer class="site-footer"><div class="shell footer-inner"><a class="brand footer-brand" href="#top"><span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span><span>pulse<span class="brand-accent">data</span></span></a><p>Mobile data made simple for Ghana.</p><div class="footer-links"><a href="#bundles">Bundles</a><a href="#how-it-works">How it works</a><a href="#help">Help</a></div></div><div class="shell footer-bottom"><span>© 2026 PulseData Ghana</span><span>Prices shown in Ghana cedis (GHS)</span></div></footer>
+
+  <div class="modal-backdrop" id="review-modal" hidden>
+    <section class="review-modal" role="dialog" aria-modal="true" aria-labelledby="review-title">
+      <button class="modal-close" id="close-modal" type="button" aria-label="Close review">×</button>
+      <span class="panel-label">ORDER REVIEW</span><h2 id="review-title">Check your bundle details.</h2>
+      <div class="review-summary"><div><span>Network</span><strong id="review-network">MTN Ghana</strong></div><div><span>Bundle</span><strong id="review-bundle">1 GB · Data bundle</strong></div><div><span>Recipient</span><strong id="review-recipient">+233 24 000 0000</strong></div><div class="review-total"><span>Total</span><strong id="review-total">GHS 4.00</strong></div></div>
+      <div class="not-ready"><span class="not-ready-icon">✓</span><p><strong>Pay securely with Paystack.</strong><br>After payment is confirmed, your bundle will be manually delivered within 2–5 minutes.</p></div>
+      <button class="button button-primary full-width" id="not-ready-button" type="button">Continue to Paystack</button>
+    </section>
+  </div>
+  <div class="modal-backdrop" id="success-modal" hidden>
+    <section class="review-modal success-modal" role="dialog" aria-modal="true" aria-labelledby="success-title">
+      <button class="modal-close" id="close-success-modal" type="button" aria-label="Close confirmation">×</button>
+      <div class="success-icon">✓</div>
+      <span class="panel-label">PAYMENT SUCCESSFUL</span><h2 id="success-title">Your bundle is on the way.</h2>
+      <p class="success-copy">We received your payment. We will use the recipient details below to purchase your bundle manually. Delivery usually takes 2–5 minutes.</p>
+      <div class="review-summary"><div><span>Network</span><strong id="success-network">MTN Ghana</strong></div><div><span>Bundle</span><strong id="success-bundle">1 GB data bundle</strong></div><div><span>Recipient</span><strong id="success-recipient">+233 24 000 0000</strong></div><div class="review-total"><span>Total paid</span><strong id="success-total">GHS 4.00</strong></div></div>
+      <button class="button button-primary full-width" id="close-success-action" type="button">Done</button>
+    </section>
+  </div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>
