@@ -8958,19 +8958,75 @@
         }
 
         function setDepositAmount(amount) {
-            state.depositAmount = amount;
+            const presets = [30, 50, 70, 90, 120, 150, 180, 220, 260, 300, 350, 400, 450, 500];
+            state.depositAmount = presets.includes(Number(amount)) ? Number(amount) : 0;
             document.querySelectorAll('[data-deposit-amount]').forEach(b => {
-                b.classList.toggle('active', parseFloat(b.dataset.depositAmount) === amount);
+                b.classList.toggle('active', parseFloat(b.dataset.depositAmount) === state.depositAmount);
             });
             clearDepositError();
+            const button = document.getElementById('depositContinueBtn');
+            if (button) button.disabled = !state.depositAmount;
         }
 
         function clearDepositError() {
             document.getElementById('depositResult').innerHTML = '';
         }
 
-        function handleDeposit() {
-            showToast('info', 'Secure deposit flow is loading. Please try again.');
+        async function handleDeposit() {
+            // app.js provides the full confirmation flow when it is available.
+            // Keep this small fallback so a stale/missing cached app.js cannot
+            // leave the payment button as a no-op.
+            const amount = Number(state.depositAmount || 0);
+            const result = document.getElementById('depositResult');
+            const button = document.getElementById('depositContinueBtn');
+            const presets = [30, 50, 70, 90, 120, 150, 180, 220, 260, 300, 350, 400, 450, 500];
+            const showDepositResult = (kind, message) => {
+                if (!result) return;
+                const alert = document.createElement('div');
+                alert.className = `inline-alert ${kind}`;
+                alert.textContent = message;
+                result.replaceChildren(alert);
+            };
+            if (!presets.includes(amount)) {
+                const message = 'Choose a valid deposit amount first.';
+                showDepositResult('error', message);
+                showToast('error', message);
+                return;
+            }
+            if (button) {
+                button.disabled = true;
+                button.textContent = 'Opening secure checkout…';
+            }
+            try {
+                const response = await fetch('/api/deposits', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Idempotency-Key': `deposit_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+                    },
+                    body: JSON.stringify({ amount, contactEmail: state.user?.email || '' }),
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.error || 'Could not start payment.');
+                if (data.handoffUrl) {
+                    window.location.assign(data.handoffUrl);
+                    return;
+                }
+                const message = data.message || 'Payment is being verified. Please try again shortly.';
+                showDepositResult('info', message);
+                showToast('info', message);
+            } catch (paymentError) {
+                const message = paymentError.message || 'Could not start payment.';
+                showDepositResult('error', message);
+                showToast('error', message);
+                console.error('[PHANTOM CARDS] Deposit initialization failed:', paymentError);
+            } finally {
+                if (button) {
+                    button.disabled = false;
+                    button.textContent = 'Continue to payment';
+                }
+            }
         }
 
         // ================================================================
@@ -9865,7 +9921,7 @@
             }, 100);
         });
     </script>
-    <script src="/app.js?v=20260912-shop-limits"></script>
+    <script src="/app.js?v=20261103-payment-flow"></script>
 
 </body>
 </html>
