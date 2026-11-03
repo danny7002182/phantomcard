@@ -1,59 +1,316 @@
-const http=require('node:http'),crypto=require('node:crypto'),fs=require('node:fs'),path=require('node:path'),{Readable}=require('node:stream'),{PAYSTACK_PAYMENT_EMAILS,isAllowedPaystackPaymentEmail}=require('../payment-config'),ROOT=__dirname;
+const http = require('node:http');
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+const { Readable } = require('node:stream');
+const { PAYSTACK_PAYMENT_EMAILS, isAllowedPaystackPaymentEmail } = require('../payment-config');
 const { createBundleRoute, handleBundleWebhook } = require('./bundle-service');
-const bundleRoute = createBundleRoute({
-  getBase: () => (process.env.SITE_B_BASE_URL || `http://127.0.0.1:${process.env.PORT || 4000}`).replace(/\/$/, ''),
-  pay: (...args) => pay(...args)
-});
-function servePublicSite(r,pathname){
-  const files={'/':'index.html','/index.html':'index.html','/styles.css':'styles.css','/app.js':'app.js'};
-  const name=files[pathname];
-  if(!name)return false;
-  const file=path.join(ROOT,'public',name);
-  if(!fs.existsSync(file))return false;
-  const type=name.endsWith('.css')?'text/css':name.endsWith('.js')?'text/javascript':'text/html';
-  r.writeHead(200,{'content-type':`${type}; charset=utf-8`,'cache-control':name==='index.html'||name==='app.js'?'no-cache':'public, max-age=300','x-content-type-options':'nosniff'});
-  r.end(fs.readFileSync(file));
+
+const ROOT = __dirname;
+const TOKEN_PATTERN = /^[A-Za-z0-9_-]{16,256}$/;
+const REFERENCE_PATTERN = /^[A-Za-z0-9_-]{8,160}$/;
+
+function loadEnvFile(file = path.join(ROOT, '.env')) {
+  if (!fs.existsSync(file)) return;
+  for (const line of fs.readFileSync(file, 'utf8').split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#') || !trimmed.includes('=')) continue;
+    const index = trimmed.indexOf('=');
+    const key = trimmed.slice(0, index).trim();
+    const value = trimmed.slice(index + 1).trim().replace(/^['"]|['"]$/g, '');
+    if (key && process.env[key] === undefined) process.env[key] = value;
+  }
+}
+
+loadEnvFile();
+
+const PORT = Number(process.env.PORT || 4000);
+const normalizeBase = value => String(value || '').trim().replace(/\/+$/, '');
+const BASE = normalizeBase(process.env.SITE_B_BASE_URL || `http://127.0.0.1:${PORT}`);
+const SITE_A_BASE_URL = normalizeBase(process.env.SITE_A_BASE_URL);
+const SITE_A_TO_SITE_B_SECRET = String(process.env.SITE_A_TO_SITE_B_SECRET || '').trim();
+const SITE_B_TO_SITE_A_SECRET = String(process.env.SITE_B_TO_SITE_A_SECRET || '').trim();
+const PAYSTACK_SECRET_KEY = String(process.env.PAYSTACK_SECRET_KEY || '').trim();
+const PAYSTACK_API_BASE_URL = normalizeBase(process.env.PAYSTACK_API_BASE_URL || 'https://api.paystack.co');
+const PAYMENT_DATA_FILE = process.env.PAYMENT_DATA_FILE || path.join(ROOT, 'data/payment-service.json');
+const PUBLIC_ROOT = path.join(ROOT, 'public');
+
+const now = () => new Date().toISOString();
+const id = prefix => `${prefix}_${crypto.randomBytes(12).toString('hex')}`;
+const hashToken = token => crypto.createHash('sha256').update(token).digest('hex');
+const createHandoffToken = () => crypto.randomBytes(32).toString('base64url');
+
+function read(request) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    request.on('data', chunk => chunks.push(chunk));
+    request.on('end', () => resolve(Buffer.concat(chunks)));
+    request.on('error', reject);
+  });
+}
+
+function load() {
+  fs.mkdirSync(path.dirname(PAYMENT_DATA_FILE), { recursive: true });
+  if (!fs.existsSync(PAYMENT_DATA_FILE)) return { transactions: [], webhookEvents: [], requestIds: [] };
+  const data = JSON.parse(fs.readFileSync(PAYMENT_DATA_FILE, 'utf8'));
+  return { transactions: data.transactions || [], webhookEvents: data.webhookEvents || [], requestIds: data.requestIds || [] };
+}
+
+function save(data) {
+  fs.mkdirSync(path.dirname(PAYMENT_DATA_FILE), { recursive: true });
+  fs.writeFileSync(PAYMENT_DATA_FILE, JSON.stringify(data, null, 2));
+}
+
+function out(response, status, payload, headers = {}) {
+  response.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', ...headers });
+  response.end(JSON.stringify(payload));
+}
+
+function signed(secret, payload, requestId = id('req')) {
+  const timestamp = String(Date.now());
+  const body = JSON.stringify(payload);
+  return {
+    body,
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${secret}`,
+      'x-request-id': requestId,
+      'x-timestamp': timestamp,
+      'x-sitea-signature': crypto.createHmac('sha256', secret).update(`${timestamp}.${requestId}.${body}`).digest('hex'),
+    },
+  };
+}
+
+function safeEqual(left, right) {
+  const a = Buffer.from(String(left));
+  const b = Buffer.from(String(right));
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+function authenticated(request, rawBody, secret) {
+  const requestId = String(request.headers['x-request-id'] || '');
+  const timestamp = String(request.headers['x-timestamp'] || '');
+  const signature = String(request.headers['x-sitea-signature'] || '');
+  const bearer = String(request.headers.authorization || '').replace(/^Bearer\s+/i, '');
+  if (!secret || !safeEqual(bearer, secret)) return false;
+  if (!REFERENCE_PATTERN.test(requestId) || !/^\d{13}$/.test(timestamp)) return false;
+  if (!/^[a-f0-9]{64}$/i.test(signature) || Math.abs(Date.now() - Number(timestamp)) > 5 * 60 * 1000) return false;
+  const expected = crypto.createHmac('sha256', secret).update(`${timestamp}.${requestId}.${rawBody}`).digest('hex');
+  return safeEqual(signature, expected);
+}
+
+function validInitializePayload(payload) {
+  return Boolean(payload && REFERENCE_PATTERN.test(String(payload.siteATransactionId || '')) && REFERENCE_PATTERN.test(String(payload.siteAUserId || '')) && Number.isInteger(payload.amountMinor) && payload.amountMinor > 0 && /^[A-Z]{3}$/.test(String(payload.currency || '')) && ['WALLET_TOPUP', 'KYC_BYPASS'].includes(payload.purpose) && isAllowedPaystackPaymentEmail(payload.customer?.email));
+}
+
+async function callSiteA(endpoint, payload) {
+  const request = signed(SITE_B_TO_SITE_A_SECRET, payload);
+  const response = await fetch(`${SITE_A_BASE_URL}${endpoint}`, { method: 'POST', headers: request.headers, body: request.body });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || 'Site A rejected the payment update.');
+  return data;
+}
+
+async function paystack(endpoint, options = {}) {
+  if (!PAYSTACK_SECRET_KEY) throw new Error('Payment service is not configured.');
+  const response = await fetch(`${PAYSTACK_API_BASE_URL}${endpoint}`, { ...options, headers: { authorization: `Bearer ${PAYSTACK_SECRET_KEY}`, 'content-type': 'application/json', ...(options.headers || {}) } });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.status) throw new Error(data.message || 'Paystack request failed.');
+  return data.data;
+}
+
+function paymentMatches(transaction, providerPayment) {
+  const metadata = providerPayment.metadata || {};
+  return providerPayment.reference === transaction.paystackReference && providerPayment.amount === transaction.amountMinor && providerPayment.currency === transaction.currency && metadata.site === 'SITE_A' && metadata.siteATransactionId === transaction.siteATransactionId && metadata.siteAUserId === transaction.siteAUserId && metadata.purpose === transaction.purpose;
+}
+
+function validKycReturnUrl(value) {
+  try {
+    const url = new URL(String(value || ''));
+    return ['http:', 'https:'].includes(url.protocol) && url.pathname === '/' && url.searchParams.has('kyc_bypass_reference') ? url.toString() : '';
+  } catch { return ''; }
+}
+
+function validPaystackAuthorizationUrl(value) {
+  try {
+    const url = new URL(String(value || ''));
+    return url.protocol === 'https:' && /(^|\.)paystack\.com$/.test(url.hostname);
+  } catch { return false; }
+}
+
+function ensureHandoff(transaction) {
+  if (!transaction.handoffTokenHash || !transaction.handoffUrl) {
+    const token = createHandoffToken();
+    transaction.handoffTokenHash = hashToken(token);
+    transaction.handoffUrl = `${BASE}/payment/handoff?token=${encodeURIComponent(token)}`;
+  }
+  return transaction.handoffUrl;
+}
+
+async function notifySiteA(transaction, source = 'payment-service', force = false) {
+  if (!force && transaction.callbackDeliveredAt) return;
+  const prefix = transaction.purpose === 'KYC_BYPASS' ? 'kyc_bypass' : 'wallet_topup';
+  const event = transaction.status === 'SUCCESS' ? `${prefix}.success` : transaction.status === 'EXPIRED' ? `${prefix}.expired` : `${prefix}.failed`;
+  const endpoint = transaction.purpose === 'KYC_BYPASS' ? '/api/v1/webhooks/kyc-bypass-payment-status' : '/api/v1/webhooks/payment-status';
+  await callSiteA(endpoint, { event, source, siteATransactionId: transaction.siteATransactionId, siteAUserId: transaction.siteAUserId, amountMinor: transaction.amountMinor, currency: transaction.currency, purpose: transaction.purpose, paystackReference: transaction.paystackReference, paymentServiceTransactionId: transaction.id, status: transaction.status, timestamp: now() });
+  transaction.callbackDeliveredAt = now();
+}
+
+async function reconcile(data, transaction, { allowExpired = false, forceCallback = false } = {}) {
+  if (!allowExpired && Date.parse(transaction.expiresAt) <= Date.now() && transaction.status === 'PENDING') transaction.status = 'EXPIRED';
+  if (transaction.status === 'PENDING' || (allowExpired && ['EXPIRED', 'FAILED'].includes(transaction.status))) {
+    const providerPayment = await paystack(`/transaction/verify/${encodeURIComponent(transaction.paystackReference)}`);
+    if (!paymentMatches(transaction, providerPayment)) throw new Error('Payment mismatch.');
+    if (providerPayment.status === 'success') transaction.status = 'SUCCESS';
+    else if (['failed', 'abandoned', 'reversed'].includes(providerPayment.status)) transaction.status = 'FAILED';
+    else transaction.status = 'PENDING';
+  }
+  if (transaction.status !== 'PENDING') await notifySiteA(transaction, allowExpired ? 'admin-reconciliation' : 'payment-service', forceCallback);
+  save(data);
+}
+
+function confirmationPage(reference) {
+  return `<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>Payment confirmation</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f2f5f8;color:#16212b;font:16px system-ui}.box{width:min(420px,calc(100% - 42px));background:#fff;border:1px solid #dbe2e8;border-radius:18px;padding:34px}h1{font-size:12px;letter-spacing:.16em;color:#64748b}h2{font-size:27px;margin:.3em 0}p{line-height:1.55;color:#52616e}.ref{font:13px monospace;word-break:break-all;background:#f6f8fa;padding:12px;border-radius:8px;margin-top:12px}button{width:100%;margin-top:18px;padding:13px;border:0;border-radius:9px;background:#164e63;color:#fff;font-weight:700;font-size:16px}.note{font-size:13px}</style><main class=box><h1>SECURE PAYSTACK CONFIRMATION</h1><h2>Payment confirmation</h2><p>Your payment is being confirmed securely.</p><div class=ref>${reference}</div><button id=done>Check payment confirmation</button><p class=note id=msg></p></main><script>done.onclick=async()=>{done.disabled=true;msg.textContent='Checking Paystack confirmation…';let r=await fetch('/api/v1/payments/${encodeURIComponent(reference)}/complete',{method:'POST'}),d=await r.json();if(d.redirect)location.assign(d.redirect);else msg.textContent=d.message||'Payment is still being confirmed.';done.disabled=false}</script>`;
+}
+
+function servePublic(response, pathname) {
+  const files = { '/': 'index.html', '/index.html': 'index.html', '/styles.css': 'styles.css', '/app.js': 'app.js' };
+  const name = files[pathname];
+  if (!name) return false;
+  const file = path.join(PUBLIC_ROOT, name);
+  if (!fs.existsSync(file)) return false;
+  const type = name.endsWith('.css') ? 'text/css' : name.endsWith('.js') ? 'text/javascript' : 'text/html';
+  response.writeHead(200, { 'content-type': `${type}; charset=utf-8`, 'cache-control': name === 'index.html' || name === 'app.js' ? 'no-cache' : 'public, max-age=300', 'x-content-type-options': 'nosniff' });
+  response.end(fs.readFileSync(file));
   return true;
 }
-const createHttpServer=http.createServer;
-http.createServer=(handler)=>createHttpServer(async(req,res)=>{
-  const pathname=new URL(req.url,'http://localhost').pathname;
-  if(req.method==='POST'&&pathname==='/api/v1/internal/admin/reconcile'){
-    const raw=await read(req);
-    if(!auth(req,raw,AB))return out(res,401,{error:'Invalid Site A authentication.'});
-    let p;try{p=JSON.parse(raw.toString()||'{}')}catch{return out(res,400,{error:'Malformed reconciliation request.'})}
-    if(!/^[A-Za-z0-9_-]{8,160}$/.test(String(p.siteATransactionId||'')))return out(res,400,{error:'A valid Site A transaction ID is required.'});
-    const d=load(),t=d.transactions.find(item=>item.siteATransactionId===String(p.siteATransactionId)&&(!p.paystackReference||item.paystackReference===String(p.paystackReference)));
-    if(!t)return out(res,404,{error:'Payment transaction was not found in the payment-service database.'});
-    try{
-      await reconcile(d,t,{allowExpired:true,forceCallback:true});
-      const paystackStatus=t.status==='SUCCESS'?'success':t.status==='FAILED'?'failed':t.status==='EXPIRED'?'expired':'pending';
-      return out(res,200,{ok:true,transactionId:t.id,siteATransactionId:t.siteATransactionId,paystackReference:t.paystackReference,status:t.status,paystackStatus,callbackDelivered:Boolean(t.callbackDeliveredAt),amountMinor:t.amountMinor,currency:t.currency,callbackDeliveredAt:t.callbackDeliveredAt||null});
-    }catch(error){return out(res,502,{error:error.message||'Payment-service reconciliation failed.'})}
-  }
-  if(req.method==='GET'&&servePublicSite(res,pathname))return;
-  if(req.method==='POST'&&pathname==='/api/v1/webhooks/paystack'){
-    const raw=await read(req);
-    const handled=await handleBundleWebhook(raw,req.headers);
-    if(handled){
-      if(handled.duplicate){res.writeHead(200,{'content-type':'application/json','cache-control':'no-store'});res.end(JSON.stringify({ok:true,duplicate:true}));}
-      else{res.writeHead(200,{'content-type':'application/json','cache-control':'no-store'});res.end(JSON.stringify({ok:true}));}
-      return;
+
+async function route(request, response) {
+  const url = new URL(request.url, BASE);
+  const data = load();
+  try {
+    if (request.method === 'GET' && url.pathname === '/api/health') return out(response, 200, { ok: true, paystackConfigured: Boolean(PAYSTACK_SECRET_KEY) });
+
+    if (request.method === 'GET' && url.pathname === '/payment/handoff') {
+      const token = url.searchParams.get('token') || '';
+      const transaction = data.transactions.find(item => item.handoffTokenHash === hashToken(token));
+      if (!TOKEN_PATTERN.test(token) || !transaction || transaction.status !== 'PENDING' || Date.parse(transaction.expiresAt) <= Date.now() || !validPaystackAuthorizationUrl(transaction.authorizationUrl)) return out(response, 404, { error: 'Payment handoff was not found or has expired.' });
+      response.writeHead(302, { location: transaction.authorizationUrl, 'cache-control': 'no-store', 'referrer-policy': 'no-referrer', 'x-content-type-options': 'nosniff' });
+      return response.end();
     }
-    const replay=Readable.from([raw]);
-    replay.method=req.method; replay.url=req.url; replay.headers=req.headers;
-    return handler(replay,res);
+
+    if (request.method === 'GET' && url.pathname === '/payment/return') {
+      const reference = url.searchParams.get('reference') || '';
+      if (!REFERENCE_PATTERN.test(reference)) return out(response, 400, { error: 'Invalid payment reference.' });
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+      return response.end(confirmationPage(reference));
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/v1/payments/initialize') {
+      const raw = await read(request);
+      if (!authenticated(request, raw, SITE_A_TO_SITE_B_SECRET)) return out(response, 401, { error: 'Invalid Site A authentication.' });
+      let payload;
+      try { payload = JSON.parse(raw.toString() || '{}'); } catch { return out(response, 400, { error: 'Malformed request.' }); }
+      if (!validInitializePayload(payload)) return out(response, 400, { error: 'Malformed payment request.' });
+
+      let transaction = data.transactions.find(item => item.siteATransactionId === payload.siteATransactionId && item.purpose === payload.purpose);
+      if (transaction) {
+        ensureHandoff(transaction);
+        save(data);
+        return out(response, 200, { transactionId: transaction.id, paystackReference: transaction.paystackReference, handoffUrl: transaction.handoffUrl, expiresAt: transaction.expiresAt });
+      }
+
+      const lookupPath = payload.purpose === 'KYC_BYPASS' ? '/api/v1/internal/kyc-bypass/lookup' : '/api/v1/internal/topups/lookup';
+      const account = await callSiteA(lookupPath, { siteATransactionId: payload.siteATransactionId });
+      if (account.userId !== payload.siteAUserId || account.amountMinor !== payload.amountMinor || account.currency !== payload.currency || account.purpose !== payload.purpose || !isAllowedPaystackPaymentEmail(account.customer?.email) || String(account.customer.email).toLowerCase() !== String(payload.customer.email).toLowerCase()) return out(response, 400, { error: 'Payment data did not reconcile.' });
+
+      transaction = { id: id('pay'), siteATransactionId: payload.siteATransactionId, siteAUserId: payload.siteAUserId, amountMinor: payload.amountMinor, currency: payload.currency, purpose: payload.purpose, paystackReference: `PCS_${crypto.randomBytes(16).toString('hex')}`, status: 'PENDING', expiresAt: account.expiresAt, createdAt: now(), updatedAt: now(), customerEmail: payload.customer.email, returnUrl: payload.purpose === 'KYC_BYPASS' ? validKycReturnUrl(payload.returnUrl) : '' };
+      const provider = await paystack('/transaction/initialize', { method: 'POST', body: JSON.stringify({ email: transaction.customerEmail, amount: transaction.amountMinor, currency: transaction.currency, reference: transaction.paystackReference, callback_url: `${BASE}/payment/return?reference=${encodeURIComponent(transaction.paystackReference)}`, metadata: { site: 'SITE_A', siteATransactionId: transaction.siteATransactionId, siteAUserId: transaction.siteAUserId, purpose: transaction.purpose } }) });
+      transaction.authorizationUrl = provider.authorization_url;
+      if (!validPaystackAuthorizationUrl(transaction.authorizationUrl)) return out(response, 502, { error: 'Paystack returned an invalid checkout URL.' });
+      ensureHandoff(transaction);
+      data.transactions.push(transaction);
+      save(data);
+      return out(response, 201, { transactionId: transaction.id, paystackReference: transaction.paystackReference, handoffUrl: transaction.handoffUrl, expiresAt: transaction.expiresAt });
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/v1/webhooks/paystack') {
+      const raw = await read(request);
+      const signature = String(request.headers['x-paystack-signature'] || '');
+      const expected = PAYSTACK_SECRET_KEY && crypto.createHmac('sha512', PAYSTACK_SECRET_KEY).update(raw).digest('hex');
+      if (!expected || !safeEqual(signature, expected)) return out(response, 401, { error: 'Invalid Paystack signature.' });
+      const event = JSON.parse(raw.toString() || '{}');
+      const eventId = String(event.id || crypto.createHash('sha256').update(raw).digest('hex'));
+      if (data.webhookEvents.some(item => item.eventId === eventId)) return out(response, 200, { ok: true, duplicate: true });
+      const providerPayment = event.data || {};
+      const transaction = data.transactions.find(item => item.paystackReference === providerPayment.reference);
+      data.webhookEvents.push({ id: id('evt'), provider: 'paystack', eventId, eventType: event.event, transactionReference: providerPayment.reference || '', receivedAt: now(), processed: false });
+      if (transaction && paymentMatches(transaction, providerPayment)) {
+        if (event.event === 'charge.success') transaction.status = 'SUCCESS';
+        else if (event.event === 'charge.failed') transaction.status = 'FAILED';
+        if (transaction.status !== 'PENDING') { await notifySiteA(transaction); data.webhookEvents.at(-1).processed = true; data.webhookEvents.at(-1).processedAt = now(); }
+      }
+      save(data);
+      return out(response, 200, { ok: true });
+    }
+
+    if (request.method === 'POST' && /^\/api\/v1\/payments\/[^/]+\/complete$/.test(url.pathname)) {
+      const reference = decodeURIComponent(url.pathname.split('/')[4] || '');
+      const transaction = data.transactions.find(item => item.paystackReference === reference);
+      if (!transaction) return out(response, 404, { error: 'Payment session was not found.' });
+      await reconcile(data, transaction);
+      const key = transaction.purpose === 'KYC_BYPASS' ? 'kyc_bypass_reference' : 'wallet_topup';
+      if (transaction.status === 'SUCCESS' && transaction.callbackDeliveredAt) {
+        if (transaction.purpose === 'KYC_BYPASS' && transaction.returnUrl) return out(response, 200, { redirect: transaction.returnUrl });
+        return out(response, 200, { redirect: `${SITE_A_BASE_URL}/?${key}=${encodeURIComponent(transaction.siteATransactionId)}` });
+      }
+      if (['FAILED', 'EXPIRED'].includes(transaction.status)) return out(response, 200, { redirect: `${SITE_A_BASE_URL}/?payment=${transaction.status.toLowerCase()}` });
+      return out(response, 202, { message: 'Payment is still being confirmed. Please wait a moment.' });
+    }
+
+    return out(response, 404, { error: 'Not found.' });
+  } catch (error) {
+    console.error('[payment-service]', error);
+    return out(response, 500, { error: 'Payment service could not process this request.' });
   }
-  await bundleRoute(req,res);
-  if(res.writableEnded)return;
-  return handler(req,res);
-});
-for(const l of(fs.existsSync(path.join(ROOT,'.env'))?fs.readFileSync(path.join(ROOT,'.env'),'utf8'):'').split(/\r?\n/)){const i=l.indexOf('=');if(i>0&&!l.trim().startsWith('#')&&process.env[l.slice(0,i).trim()]===undefined)process.env[l.slice(0,i).trim()]=l.slice(i+1).trim().replace(/^['"]|['"]$/g,'')}
-const PORT=+process.env.PORT||4000,BASE=(process.env.SITE_B_BASE_URL||`http://127.0.0.1:${PORT}`).replace(/\/$/,''),A=(process.env.SITE_A_BASE_URL||'').replace(/\/$/,''),AB=process.env.SITE_A_TO_SITE_B_SECRET||'',BA=process.env.SITE_B_TO_SITE_A_SECRET||'',KEY=process.env.PAYSTACK_SECRET_KEY||'',API=(process.env.PAYSTACK_API_BASE_URL||'https://api.paystack.co').replace(/\/$/,''),DATA=process.env.PAYMENT_DATA_FILE||path.join(ROOT,'data/payment-service.json'),PUBLIC_ROOT=path.join(ROOT,'public');
-const now=()=>new Date().toISOString(),id=p=>`${p}_${crypto.randomBytes(12).toString('hex')}`,eq=(a,b)=>{const x=Buffer.from(String(a)),y=Buffer.from(String(b));return x.length===y.length&&crypto.timingSafeEqual(x,y)},read=async q=>{const c=[];for await(const x of q)c.push(x);return Buffer.concat(c)};
-function load(){fs.mkdirSync(path.dirname(DATA),{recursive:true});if(!fs.existsSync(DATA))return{transactions:[],webhookEvents:[],requestIds:[]};const d=JSON.parse(fs.readFileSync(DATA));return{transactions:d.transactions||[],webhookEvents:d.webhookEvents||[],requestIds:d.requestIds||[]}} function save(d){fs.mkdirSync(path.dirname(DATA),{recursive:true});fs.writeFileSync(DATA,JSON.stringify(d,null,2))} function out(r,s,x){r.writeHead(s,{'content-type':'application/json','cache-control':'no-store','x-content-type-options':'nosniff'});r.end(JSON.stringify(x))}
-function signed(s,p,r=id('req')){const t=String(Date.now()),b=JSON.stringify(p);return{authorization:`Bearer ${s}`,'x-request-id':r,'x-timestamp':t,'x-sitea-signature':crypto.createHmac('sha256',s).update(`${t}.${r}.${b}`).digest('hex')}} function auth(q,b,s){const r=String(q.headers['x-request-id']||''),t=String(q.headers['x-timestamp']||''),g=String(q.headers['x-sitea-signature']||''),bearer=String(q.headers.authorization||'').replace(/^Bearer\s+/i,'');return !!(s&&eq(bearer,s)&&/^[A-Za-z0-9_-]{8,200}$/.test(r)&&/^\d{13}$/.test(t)&&/^[a-f0-9]{64}$/i.test(g)&&Math.abs(Date.now()- +t)<=300000&&eq(g,crypto.createHmac('sha256',s).update(`${t}.${r}.${b}`).digest('hex')))}
-function valid(p){return p&&/^[A-Za-z0-9_-]{8,160}$/.test(p.siteATransactionId)&&/^[A-Za-z0-9_-]{8,160}$/.test(p.siteAUserId)&&Number.isInteger(p.amountMinor)&&p.amountMinor>0&&/^[A-Z]{3}$/.test(p.currency)&&['WALLET_TOPUP','KYC_BYPASS'].includes(p.purpose)&&isAllowedPaystackPaymentEmail(p.customer?.email)} async function call(pathname,p){const r=await fetch(A+pathname,{method:'POST',headers:{'content-type':'application/json',...signed(BA,p)},body:JSON.stringify(p)}),d=await r.json().catch(()=>({}));if(!r.ok)throw Error(d.error||'Site A rejected request');return d} async function pay(route,o={}){if(!KEY)throw Error('Payment service is not configured');const r=await fetch(API+route,{...o,headers:{authorization:`Bearer ${KEY}`,'content-type':'application/json',...(o.headers||{})}}),d=await r.json();if(!r.ok||!d.status)throw Error(d.message||'Paystack request failed');return d.data}
-function match(t,p){const m=p.metadata||{};return p.reference===t.paystackReference&&p.amount===t.amountMinor&&p.currency===t.currency&&m.site==='SITE_A'&&m.siteATransactionId===t.siteATransactionId&&m.siteAUserId===t.siteAUserId&&m.purpose===t.purpose} function validReturnUrl(value){try{const u=new URL(String(value||''));return ['http:','https:'].includes(u.protocol)&&u.pathname==='/'&&u.searchParams.has('kyc_bypass_reference')?u.toString():''}catch{return ''}} function servePublic(r,pathname){const files={'/':'index.html','/index.html':'index.html','/styles.css':'styles.css','/app.js':'app.js'},name=files[pathname];if(!name)return false;const file=path.join(PUBLIC_ROOT,name);if(!fs.existsSync(file))return false;const type=name.endsWith('.css')?'text/css':name.endsWith('.js')?'text/javascript':'text/html';r.writeHead(200,{'content-type':`${type}; charset=utf-8`,'cache-control':name==='index.html'?'no-cache':'public, max-age=300','x-content-type-options':'nosniff'});r.end(fs.readFileSync(file));return true} async function notify(t,source='payment-service',force=false){const prefix=t.purpose==='KYC_BYPASS'?'kyc_bypass':'wallet_topup',event=t.status==='SUCCESS'?`${prefix}.success`:t.status==='EXPIRED'?`${prefix}.expired`:`${prefix}.failed`,endpoint=t.purpose==='KYC_BYPASS'?'/api/v1/webhooks/kyc-bypass-payment-status':'/api/v1/webhooks/payment-status';if(!force&&t.callbackDeliveredAt)return;await call(endpoint,{event,source,siteATransactionId:t.siteATransactionId,siteAUserId:t.siteAUserId,amountMinor:t.amountMinor,currency:t.currency,purpose:t.purpose,paystackReference:t.paystackReference,paymentServiceTransactionId:t.id,status:t.status,timestamp:now()});t.callbackDeliveredAt=now()} async function reconcile(d,t,{allowExpired=false,forceCallback=false}={}){if(!allowExpired&&Date.parse(t.expiresAt)<=Date.now()&&t.status==='PENDING')t.status='EXPIRED';if(t.status==='PENDING'||(allowExpired&&['EXPIRED','FAILED'].includes(t.status))){const p=await pay('/transaction/verify/'+encodeURIComponent(t.paystackReference));if(!match(t,p))throw Error('Payment mismatch');if(p.status==='success')t.status='SUCCESS';else if(['failed','abandoned','reversed'].includes(p.status))t.status='FAILED';else t.status='PENDING'}if(t.status!=='PENDING')await notify(t,allowExpired?'admin-reconciliation':'payment-service',forceCallback);save(d)}
-function page(t){const ref=typeof t==='string'?t:t.paystackReference,bypass=typeof t==='object'&&t.purpose==='KYC_BYPASS',amount=bypass?(t.amountMinor/100).toFixed(2):'',title=bypass?'GHS 70.00 KYC bypass payment':'Payment confirmation',copy=bypass?'Your withdrawal remains pending until Paystack confirms this exact GHS 70.00 payment. A successful confirmation auto-approves this withdrawal only; it does not verify your account.':'Your payment is being confirmed securely.';return `<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>Payment confirmation</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f2f5f8;color:#16212b;font:16px system-ui}.box{width:min(420px,calc(100% - 42px));background:#fff;border:1px solid #dbe2e8;border-radius:18px;padding:34px}h1{font-size:12px;letter-spacing:.16em;color:#64748b}h2{font-size:27px;margin:.3em 0}p{line-height:1.55;color:#52616e}.amount{padding:13px;border-radius:9px;background:#fff8e8;color:#8a5c04;font-weight:800;font-size:20px}.ref{font:13px monospace;word-break:break-all;background:#f6f8fa;padding:12px;border-radius:8px;margin-top:12px}button{width:100%;margin-top:18px;padding:13px;border:0;border-radius:9px;background:#164e63;color:#fff;font-weight:700;font-size:16px}.note{font-size:13px}</style><main class=box><h1>SECURE PAYSTACK CONFIRMATION</h1><h2>${title}</h2>${bypass?`<div class=amount>${t.currency} ${amount}</div>`:''}<p>${copy}</p><div class=ref>${ref}</div><button id=done>Check payment confirmation</button><p class=note id=msg></p></main><script>done.onclick=async()=>{done.disabled=true;msg.textContent='Checking Paystack confirmation…';let r=await fetch('/api/v1/payments/${encodeURIComponent(ref)}/complete',{method:'POST'}),d=await r.json();if(d.redirect)location.assign(d.redirect);else msg.textContent=d.message||'Payment is still being confirmed.';done.disabled=false}</script>`}
-async function route(q,r){const u=new URL(q.url,BASE),d=load();try{if(q.method==='GET'&&u.pathname==='/api/health')return out(r,200,{ok:true,paystackConfigured:!!KEY});if(q.method==='GET'&&u.pathname==='/payment/return'){const ref=u.searchParams.get('reference')||'';if(!/^[A-Za-z0-9_-]{8,160}$/.test(ref))return out(r,400,{error:'Invalid payment reference.'});r.writeHead(200,{'content-type':'text/html','cache-control':'no-store'});return r.end(page(ref))}if(q.method==='POST'&&u.pathname==='/api/v1/payments/initialize'){const b=await read(q);if(!auth(q,b,AB))return out(r,401,{error:'Invalid Site A authentication.'});let p;try{p=JSON.parse(b)}catch{return out(r,400,{error:'Malformed request.'})}if(!valid(p))return out(r,400,{error:'Malformed payment request.'});let t=d.transactions.find(x=>x.siteATransactionId===p.siteATransactionId&&x.purpose===p.purpose);if(t)return out(r,200,{transactionId:t.id,paystackReference:t.paystackReference,authorizationUrl:t.authorizationUrl,expiresAt:t.expiresAt});const lookup=p.purpose==='KYC_BYPASS'?'/api/v1/internal/kyc-bypass/lookup':'/api/v1/internal/topups/lookup',a=await call(lookup,{siteATransactionId:p.siteATransactionId});if(a.userId!==p.siteAUserId||a.amountMinor!==p.amountMinor||a.currency!==p.currency||a.purpose!==p.purpose||!PAYSTACK_PAYMENT_EMAILS.includes(String(a.customer?.email||'').trim().toLowerCase())||a.customer.email.toLowerCase()!==p.customer.email.toLowerCase())return out(r,400,{error:'Payment data did not reconcile.'});t={id:id('pay'),siteATransactionId:p.siteATransactionId,siteAUserId:p.siteAUserId,amountMinor:p.amountMinor,currency:p.currency,purpose:p.purpose,paystackReference:'PCS_'+crypto.randomBytes(16).toString('hex'),status:'PENDING',expiresAt:a.expiresAt,createdAt:now(),updatedAt:now(),customerEmail:p.customer.email,returnUrl:p.purpose==='KYC_BYPASS'?validReturnUrl(p.returnUrl):''};const c=await pay('/transaction/initialize',{method:'POST',body:JSON.stringify({email:t.customerEmail,amount:t.amountMinor,currency:t.currency,reference:t.paystackReference,callback_url:BASE+'/payment/return?reference='+encodeURIComponent(t.paystackReference),metadata:{site:'SITE_A',siteATransactionId:t.siteATransactionId,siteAUserId:t.siteAUserId,purpose:t.purpose}})});t.authorizationUrl=c.authorization_url;d.transactions.push(t);save(d);return out(r,201,{transactionId:t.id,paystackReference:t.paystackReference,authorizationUrl:t.authorizationUrl,expiresAt:t.expiresAt})}if(q.method==='POST'&&u.pathname==='/api/v1/webhooks/paystack'){const b=await read(q),sig=q.headers['x-paystack-signature']||'',expected=KEY&&crypto.createHmac('sha512',KEY).update(b).digest('hex');if(!expected||!eq(sig,expected))return out(r,401,{error:'Invalid Paystack signature.'});const e=JSON.parse(b),eventId=String(e.id||crypto.createHash('sha256').update(b).digest('hex'));if(d.webhookEvents.some(x=>x.eventId===eventId))return out(r,200,{ok:true,duplicate:true});const p=e.data||{},t=d.transactions.find(x=>x.paystackReference===p.reference);d.webhookEvents.push({id:id('evt'),provider:'paystack',eventId,eventType:e.event,transactionReference:p.reference||'',payloadHash:crypto.createHash('sha256').update(b).digest('hex'),processed:false,receivedAt:now()});if(t&&match(t,p)){if(e.event==='charge.success')t.status='SUCCESS';else if(e.event==='charge.failed')t.status='FAILED';if(t.status!=='PENDING')await notify(t);d.webhookEvents.at(-1).processed=true;d.webhookEvents.at(-1).processedAt=now()}save(d);return out(r,200,{ok:true})}if(q.method==='POST'&&/^\/api\/v1\/payments\/[^/]+\/complete$/.test(u.pathname)){const t=d.transactions.find(x=>x.paystackReference===decodeURIComponent(u.pathname.split('/')[4]));if(!t)return out(r,404,{error:'Payment session was not found.'});await reconcile(d,t);const key=t.purpose==='KYC_BYPASS'?'kyc_bypass_reference':'wallet_topup',value=t.siteATransactionId;if(t.status==='SUCCESS'&&t.callbackDeliveredAt){if(t.purpose==='KYC_BYPASS'&&t.returnUrl)return out(r,200,{redirect:t.returnUrl});return out(r,200,{redirect:A+'/?'+key+'='+encodeURIComponent(value)})}if(['FAILED','EXPIRED'].includes(t.status)){const origin=t.purpose==='KYC_BYPASS'&&t.returnUrl?new URL(t.returnUrl).origin:A;return out(r,200,{redirect:origin+'/?payment='+t.status.toLowerCase()})}return out(r,202,{message:'Payment is still being confirmed. Please wait a moment.'})}out(r,404,{error:'Not found.'})}catch(e){out(r,500,{error:'Payment service could not process this request.'})}} http.createServer(route).listen(PORT,()=>console.log('Payment service: '+BASE));
+}
+
+const bundleRoute = createBundleRoute({ getBase: () => BASE, pay: (...args) => paystack(...args) });
+
+http.createServer(async (request, response) => {
+  const pathname = new URL(request.url, BASE).pathname;
+
+  if (request.method === 'POST' && pathname === '/api/v1/internal/admin/reconcile') {
+    const raw = await read(request);
+    if (!authenticated(request, raw, SITE_A_TO_SITE_B_SECRET)) return out(response, 401, { error: 'Invalid Site A authentication.' });
+    let payload;
+    try { payload = JSON.parse(raw.toString() || '{}'); } catch { return out(response, 400, { error: 'Malformed reconciliation request.' }); }
+    if (!REFERENCE_PATTERN.test(String(payload.siteATransactionId || ''))) return out(response, 400, { error: 'A valid Site A transaction ID is required.' });
+    const data = load();
+    const transaction = data.transactions.find(item => item.siteATransactionId === String(payload.siteATransactionId) && (!payload.paystackReference || item.paystackReference === String(payload.paystackReference)));
+    if (!transaction) return out(response, 404, { error: 'Payment transaction was not found in the payment-service database.' });
+    try {
+      await reconcile(data, transaction, { allowExpired: true, forceCallback: true });
+      return out(response, 200, { ok: true, transactionId: transaction.id, siteATransactionId: transaction.siteATransactionId, paystackReference: transaction.paystackReference, status: transaction.status, paystackStatus: transaction.status === 'SUCCESS' ? 'success' : transaction.status === 'FAILED' ? 'failed' : transaction.status === 'EXPIRED' ? 'expired' : 'pending', callbackDelivered: Boolean(transaction.callbackDeliveredAt), amountMinor: transaction.amountMinor, currency: transaction.currency, callbackDeliveredAt: transaction.callbackDeliveredAt || null });
+    } catch (error) {
+      return out(response, 502, { error: error.message || 'Payment-service reconciliation failed.' });
+    }
+  }
+
+  if (request.method === 'GET' && servePublic(response, pathname)) return;
+
+  if (request.method === 'POST' && pathname === '/api/v1/webhooks/paystack') {
+    const raw = await read(request);
+    const handled = await handleBundleWebhook(raw, request.headers);
+    if (handled) return out(response, 200, handled.duplicate ? { ok: true, duplicate: true } : { ok: true });
+    const replay = Readable.from([raw]);
+    replay.method = request.method;
+    replay.url = request.url;
+    replay.headers = request.headers;
+    return route(replay, response);
+  }
+
+  await bundleRoute(request, response);
+  if (response.writableEnded) return;
+  return route(request, response);
+}).listen(PORT, () => console.log(`Payment service: ${BASE}`));
