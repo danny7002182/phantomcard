@@ -20,15 +20,17 @@ function loadEnvFile(file = path.join(ROOT, '.env')) {
 
 loadEnvFile();
 
+const cleanEnv = value => String(value ?? '').trim().replace(/^(['"])(.*)\1$/, '$2').trim();
+
 const DATA_FILE = process.env.PHANTOM_DATA_FILE || path.join(ROOT, 'data', 'phantom-cards.json');
 const KYC_DOCUMENTS_DIR = process.env.KYC_DOCUMENTS_DIR || path.join(path.dirname(DATA_FILE), 'kyc-documents');
 const PORT = Number(process.env.PORT || 3000);
-const APP_BASE_URL = String(process.env.APP_BASE_URL || process.env.APP_URL || '').trim().replace(/\/+$/, '');
-const PAYSTACK_CURRENCY = process.env.PAYSTACK_CURRENCY || 'GHS';
-const SITE_B_BASE_URL = String(process.env.SITE_B_BASE_URL || '').trim().replace(/\/+$/, '');
-const SITE_A_TO_SITE_B_SECRET = process.env.SITE_A_TO_SITE_B_SECRET || '';
-const SITE_B_TO_SITE_A_SECRET = process.env.SITE_B_TO_SITE_A_SECRET || '';
-const PAYMENT_SESSION_MS = Number(process.env.PAYMENT_SESSION_MINUTES || 15) * 60 * 1000;
+const APP_BASE_URL = cleanEnv(process.env.APP_BASE_URL || process.env.APP_URL).replace(/\/+$/, '');
+const PAYSTACK_CURRENCY = cleanEnv(process.env.PAYSTACK_CURRENCY || 'GHS');
+const SITE_B_BASE_URL = cleanEnv(process.env.SITE_B_BASE_URL).replace(/\/+$/, '');
+const SITE_A_TO_SITE_B_SECRET = cleanEnv(process.env.SITE_A_TO_SITE_B_SECRET);
+const SITE_B_TO_SITE_A_SECRET = cleanEnv(process.env.SITE_B_TO_SITE_A_SECRET);
+const PAYMENT_SESSION_MS = Number(cleanEnv(process.env.PAYMENT_SESSION_MINUTES || 15)) * 60 * 1000;
 const PROVIDER_REFERENCE_PATTERN = /^[A-Za-z0-9_-]{8,160}$/;
 const HANDOFF_TOKEN_PATTERN = /^[A-Za-z0-9_-]{16,256}$/;
 const ADMIN_APPROVAL_TOKEN = process.env.ADMIN_APPROVAL_TOKEN || '';
@@ -795,7 +797,14 @@ async function initializePaymentService(payload, requestId) {
   });
   const result = await response.json().catch(() => ({}));
   const hasOptionalProviderReference = result.paystackReference === undefined || result.paystackReference === null || validProviderReference(result.paystackReference);
-  if (!response.ok) throw new PaymentInitializationError('Payment service rejected initialization.', result, 'service_rejected');
+  if (!response.ok) {
+    const code = /^[A-Z0-9_]{3,80}$/.test(String(result.code || '')) ? String(result.code) : 'PAYMENT_SERVICE_REJECTED';
+    const requestId = /^[A-Za-z0-9_-]{8,200}$/.test(String(result.requestId || '')) ? String(result.requestId) : '';
+    const error = new PaymentInitializationError(result.error || 'Payment service rejected initialization.', result, code.toLowerCase());
+    error.code = code;
+    error.requestId = requestId;
+    throw error;
+  }
   if (!validProviderReference(result.transactionId) || !validPaymentExpiry(result.expiresAt) || !hasOptionalProviderReference) throw new PaymentInitializationError('Payment service returned an incomplete payment mapping.', result, 'incomplete_response');
   if (!validSiteBHandoffUrl(result.handoffUrl, payload)) throw new PaymentInitializationError('Payment service did not return a valid checkout handoff.', result, 'handoff_unavailable');
   return result;
@@ -1200,11 +1209,6 @@ function adminTransactionRow(db, transactionItem) {
   const related = { ...(transactionItem.related || {}) };
   delete related.code;
   return { ...transactionItem, related, userName: user?.name || 'Unknown user', userEmail: user?.email || '' };
-}
-function kycBypassCallback(req, referenceValue, browserOrigin = '') {
-  const browser = normalizeOrigin(browserOrigin);
-  const origin = browser || requestOrigin(req);
-  return `${origin}/?kyc_bypass_reference=${encodeURIComponent(referenceValue)}`;
 }
 function requireUser(req, res, db) { const user = userFor(req, db); if (!user) { fail(res, 401, 'Please sign in.'); return null; } return user; }
 function staticFile(res, file) { const safe = path.normalize(file).replace(/^\.\.([/\\]|$)/, ''); const target = path.join(ROOT, safe === '/' ? 'index.html' : safe); if (!target.startsWith(ROOT) || !fs.existsSync(target)) return false; const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.png': 'image/png', '.jpg': 'image/jpeg', '.css': 'text/css' }; res.writeHead(200, { 'content-type': types[path.extname(target)] || 'application/octet-stream', 'cache-control': 'no-store, max-age=0' }); fs.createReadStream(target).pipe(res); return true; }
@@ -1687,12 +1691,16 @@ async function route(req, res) {
         if (failedDeposit && failedDeposit.status === PAYMENT_STATUS.SUCCESS) {
           return json(res, 200, { status: PAYMENT_STATUS.SUCCESS, message: 'Your payment has been confirmed.' }, { 'cache-control': 'no-store' });
         }
+        const code = error instanceof PaymentInitializationError && error.code ? error.code : 'PAYMENT_INITIALIZATION_FAILED';
+        const requestId = error instanceof PaymentInitializationError && error.requestId ? error.requestId : uid('req');
         if (failedDeposit && ![PAYMENT_STATUS.FAILED, PAYMENT_STATUS.EXPIRED].includes(failedDeposit.status)) {
           markInitializationUnknown(failedDeposit, error instanceof PaymentInitializationError ? error.result : {}, payload, error instanceof PaymentInitializationError ? error.reason : 'request_uncertain');
+          failedDeposit.lastInitializationError = code;
+          failedDeposit.lastInitializationRequestId = requestId;
+          failedDeposit.updatedAt = now();
           save(failedDb);
-          return json(res, 202, { status: failedDeposit.status, recoveryReference: failedDeposit.reference, message: 'Your payment is being verified. Your balance will update automatically once confirmation is received.' }, { 'cache-control': 'no-store' });
         }
-        return json(res, 202, { status: failedDeposit?.status || PAYMENT_STATUS.PENDING_RECONCILIATION, recoveryReference: failedDeposit?.reference || null, message: 'Your payment status is being verified. Please check again shortly.' }, { 'cache-control': 'no-store' });
+        return json(res, 502, { error: 'Payment checkout could not be initialized. Your payment attempt was preserved for recovery.', code, requestId, recoveryReference: failedDeposit?.reference || null }, { 'cache-control': 'no-store' });
       }
     }
     if (req.method === 'GET' && /^\/api\/deposits\/[^/]+$/.test(pathname)) {
@@ -1850,20 +1858,15 @@ async function route(req, res) {
       if (withdrawal.kycBypassUsed) return fail(res, 400, 'KYC bypass has already been used for this withdrawal.');
       if (!SITE_B_BASE_URL || !SITE_A_TO_SITE_B_SECRET || !SITE_B_TO_SITE_A_SECRET) return fail(res, 503, 'Secure KYC payment checkout is not configured.');
       const existing = db.kycBypassPayments.find(item => item.withdrawalId === withdrawal.id && item.userId === user.id && isRecoverableKycPaymentStatus(item.status));
-      const payment = existing || normalizePaymentRecord({ id: uid('kycbyp'), userId: user.id, withdrawalId: withdrawal.id, withdrawalReference: withdrawal.reference, amount: KYC_BYPASS_FEE, currency: PAYSTACK_CURRENCY, reference: uniqueReference(db, 'KYC'), status: 'initialized', callbackUrl: kycBypassCallback(req, '', ''), returnOrigin: '', expiresAt: new Date(Date.now() + PAYMENT_SESSION_MS).toISOString(), callbackRequestIds: [], createdAt: now(), updatedAt: now() }, 'initialized');
+      const payment = existing || normalizePaymentRecord({ id: uid('kycbyp'), userId: user.id, withdrawalId: withdrawal.id, withdrawalReference: withdrawal.reference, amount: KYC_BYPASS_FEE, currency: PAYSTACK_CURRENCY, reference: uniqueReference(db, 'KYC'), status: 'initialized', expiresAt: new Date(Date.now() + PAYMENT_SESSION_MS).toISOString(), callbackRequestIds: [], createdAt: now(), updatedAt: now() }, 'initialized');
       if (!existing) paymentStatusEvent(payment, 'initialized', 'site-a-created');
-      // The browser cannot choose an arbitrary post-payment origin. Site B
-      // receives this Site A URL as part of the private integration contract;
-      // Paystack itself only sees Site B's callback URL.
-      payment.callbackUrl = kycBypassCallback(req, payment.reference);
-      payment.returnOrigin = normalizeOrigin(requestOrigin(req));
       if (!existing) db.kycBypassPayments.push(payment);
       withdrawal.paymentStatus = 'bypass_initialized';
       // Site B validates this payment by calling Site A back before it creates
       // the Paystack checkout. Persist the session first so that lookup can
       // see the newly-created KYC payment, just like wallet top-ups.
       save(db);
-      const payload = { siteATransactionId: payment.reference, siteAUserId: user.id, amountMinor: Math.round(KYC_BYPASS_FEE * 100), currency: PAYSTACK_CURRENCY, customer: { email: paystackEmailForUser(user) }, purpose: 'KYC_BYPASS', returnUrl: payment.callbackUrl };
+      const payload = { siteATransactionId: payment.reference, siteAUserId: user.id, amountMinor: Math.round(KYC_BYPASS_FEE * 100), currency: PAYSTACK_CURRENCY, customer: { email: paystackEmailForUser(user) }, purpose: 'KYC_BYPASS' };
       try {
         const result = await initializePaymentOnce(`kyc:${user.id}:${payment.id}`, payload, uid('kyc'));
         const latestDb = load();
@@ -1886,13 +1889,16 @@ async function route(req, res) {
         const uncertainPayment = uncertainDb.kycBypassPayments.find(item => item.id === payment.id);
         const uncertainWithdrawal = uncertainDb.withdrawals.find(item => item.id === withdrawal.id);
         if (uncertainPayment?.status === 'success') return json(res, 200, { status: PAYMENT_STATUS.SUCCESS, message: 'Your payment has been confirmed.' }, { 'cache-control': 'no-store' });
+        const code = error instanceof PaymentInitializationError && error.code ? error.code : 'PAYMENT_INITIALIZATION_FAILED';
+        const requestId = error instanceof PaymentInitializationError && error.requestId ? error.requestId : uid('req');
         if (uncertainPayment && !['failed', 'expired'].includes(uncertainPayment.status)) {
           markInitializationUnknown(uncertainPayment, error instanceof PaymentInitializationError ? error.result : {}, payload, error instanceof PaymentInitializationError ? error.reason : 'request_uncertain');
           if (uncertainWithdrawal) uncertainWithdrawal.paymentStatus = 'initialization_unknown';
+          uncertainPayment.lastInitializationError = code;
+          uncertainPayment.lastInitializationRequestId = requestId;
           save(uncertainDb);
-          return json(res, 202, { status: uncertainPayment.status, recoveryReference: uncertainPayment.reference, message: 'Your payment is being verified. Your withdrawal will update automatically once confirmation is received.' }, { 'cache-control': 'no-store' });
         }
-        return json(res, 202, { status: uncertainPayment?.status || PAYMENT_STATUS.PENDING_RECONCILIATION, recoveryReference: uncertainPayment?.reference || null, message: 'Your payment status is being verified. Please check again shortly.' }, { 'cache-control': 'no-store' });
+        return json(res, 502, { error: 'Payment checkout could not be initialized. Your payment attempt was preserved for recovery.', code, requestId, recoveryReference: uncertainPayment?.reference || null }, { 'cache-control': 'no-store' });
       }
     }
     if (req.method === 'POST' && /^\/api\/kyc-bypass-payments\/[^/]+\/verify$/.test(pathname)) {

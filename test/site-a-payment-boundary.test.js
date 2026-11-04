@@ -184,11 +184,10 @@ test('Site A initializes wallet and KYC payments through Site B with an exact si
   assert.equal(kyc.data.authorizationUrl, undefined);
   assert.equal(kyc.data.transactionId, undefined);
   const kycInit = paymentService.initializeCalls[1];
-  assert.deepEqual(Object.keys(kycInit.payload).sort(), ['amountMinor', 'currency', 'customer', 'purpose', 'returnUrl', 'siteATransactionId', 'siteAUserId']);
+  assert.deepEqual(Object.keys(kycInit.payload).sort(), ['amountMinor', 'currency', 'customer', 'purpose', 'siteATransactionId', 'siteAUserId']);
   assert.deepEqual(Object.keys(kycInit.payload.customer), ['email']);
   assert.equal(kycInit.payload.amountMinor, 7000);
   assert.equal(kycInit.payload.purpose, 'KYC_BYPASS');
-  assert.match(kycInit.payload.returnUrl, new RegExp(`^${siteABase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/\\?kyc_bypass_reference=`));
   assert.equal(kycInit.payload.metadata, undefined);
   const kycDb = JSON.parse(fs.readFileSync(dataFile, 'utf8'));
   const kycPayment = kycDb.kycBypassPayments.find(item => item.userId === signup.data.user.id);
@@ -233,9 +232,10 @@ test('Site A fails closed for missing, unsafe, or non-production handoff URLs', 
     await waitForHealth(siteABase);
     const signup = await jsonRequest(siteABase, '/api/auth/signup', { method: 'POST', body: JSON.stringify({ name: `Handoff User ${index}`, phone: `02412346${String(index).padStart(2, '0')}`, email: `handoff-${index}@gmail.com`, password: 'simple' }) });
     const response = await jsonRequest(siteABase, '/api/deposits', { method: 'POST', body: JSON.stringify({ amount: 180 }) }, signup.cookie);
-    assert.equal(response.status, 202, testCase.name);
-    assert.equal(response.data.status, 'PAYMENT_INITIALIZATION_UNKNOWN', testCase.name);
-    assert.match(response.data.message, /payment is being verified/i, testCase.name);
+    assert.equal(response.status, 502, testCase.name);
+    assert.match(String(response.data.code || ''), /^[A-Z0-9_]+$/, testCase.name);
+    assert.match(response.data.error, /could not be initialized/i, testCase.name);
+    assert.match(String(response.data.requestId || ''), /^[A-Za-z0-9_-]+$/, testCase.name);
     assert.equal(response.data.authorizationUrl, undefined, testCase.name);
     const db = JSON.parse(fs.readFileSync(dataFile, 'utf8'));
     assert.equal(db.deposits[0].status, 'PAYMENT_INITIALIZATION_UNKNOWN', testCase.name);
@@ -364,8 +364,9 @@ test('an uncertain Site B initialization remains recoverable and a later signed 
   await waitForHealth(siteABase);
   const signup = await jsonRequest(siteABase, '/api/auth/signup', { method: 'POST', body: JSON.stringify({ name: 'Unknown Payment User', phone: '0241234594', email: 'unknown-payment-user@gmail.com', password: 'simple' }) });
   const initialized = await jsonRequest(siteABase, '/api/deposits', { method: 'POST', body: JSON.stringify({ amount: 180 }) }, signup.cookie);
-  assert.equal(initialized.status, 202);
-  assert.equal(initialized.data.status, 'PAYMENT_INITIALIZATION_UNKNOWN');
+  assert.equal(initialized.status, 502);
+  assert.equal(initialized.data.code, 'PAYMENT_SERVICE_REJECTED');
+  assert.match(String(initialized.data.requestId || ''), /^[A-Za-z0-9_-]+$/);
   let db = JSON.parse(fs.readFileSync(dataFile, 'utf8'));
   const deposit = db.deposits[0];
   assert.equal(deposit.status, 'PAYMENT_INITIALIZATION_UNKNOWN');
